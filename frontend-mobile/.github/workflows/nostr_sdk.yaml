@@ -1,0 +1,27 @@
+# ABOUTME: CI workflow for the nostr_sdk package.
+# ABOUTME: Runs tests, formatting, and analysis only when nostr_sdk files change.
+
+name: Nostr SDK CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/packages/nostr_sdk/**"
+      - ".github/workflows/nostr_sdk.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/packages/nostr_sdk/**"
+      - ".github/workflows/nostr_sdk.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/flutter_package.yml@v1
+    with:
+      working_directory: "mobile/packages/nostr_sdk"
+      min_coverage: 20

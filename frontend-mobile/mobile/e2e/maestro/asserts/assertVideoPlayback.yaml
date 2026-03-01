@@ -1,0 +1,18 @@
+appId: co.openvine.app
+---
+#Icons to the right
+- assertVisible:
+    id: more_button
+- assertVisible:
+    id: share_button
+- assertVisible:
+    id: repost_button
+- assertVisible:
+    id: comments_button
+- assertVisible:
+    id: like_button
+
+#Video data
+- assertNotVisible:
+    text: "Loading..."
+    optional: true

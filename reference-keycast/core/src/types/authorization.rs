@@ -1,0 +1,226 @@
+use crate::encryption::KeyManagerError;
+use crate::types::permission::Permission;
+use crate::types::policy::Policy;
+use crate::types::stored_key::StoredKey;
+use chrono::DateTime;
+use serde::{Deserialize, Serialize};
+use sqlx::{FromRow, PgPool};
+use thiserror::Error;
+use urlencoding;
+
+#[derive(Error, Debug)]
+pub enum AuthorizationError {
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Encryption error: {0}")]
+    Encryption(#[from] KeyManagerError),
+    #[error("Invalid bunker secret key")]
+    InvalidBunkerSecretKey,
+    #[error("Authorization is expired")]
+    Expired,
+    #[error("Authorization is fully redeemed")]
+    FullyRedeemed,
+    #[error("Invalid secret")]
+    InvalidSecret,
+    #[error("Unauthorized by permission")]
+    Unauthorized,
+    #[error("Unsupported request")]
+    UnsupportedRequest,
+}
+
+/// A list of relays, this is used to store the relays that signers will listen on for an authorization
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct Relays(Vec<String>);
+
+impl IntoIterator for Relays {
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Relays {
+    type Item = &'a String;
+    type IntoIter = std::slice::Iter<'a, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl TryFrom<String> for Relays {
+    type Error = serde_json::Error;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Ok(Relays(serde_json::from_str(&s)?))
+    }
+}
+
+/// An authorization is a set of permissions that belong to a team and can be used to control access to a team's stored keys
+#[derive(Debug, FromRow, Serialize, Deserialize, Clone)]
+pub struct Authorization {
+    /// The id of the authorization
+    pub id: i32,
+    /// The tenant id for multi-tenancy isolation
+    pub tenant_id: i64,
+    /// The id of the stored key the authorization belongs to
+    pub stored_key_id: i32,
+    /// The bcrypt hash of the connection secret (verified during NIP-46 connect)
+    pub secret_hash: String,
+    /// The public key of the bunker nostr secret key
+    pub bunker_public_key: String,
+    #[sqlx(try_from = "String")]
+    /// The list of relays the authorization will listen on
+    pub relays: Relays,
+    /// The id of the policy the authorization belongs to
+    pub policy_id: i32,
+    /// The maximum number of uses for this authorization, None means unlimited
+    pub max_uses: Option<i32>,
+    /// The date and time at which this authorization expires, None means it never expires
+    pub expires_at: Option<DateTime<chrono::Utc>>,
+    /// The public key of the connected client (NIP-46 compliant: one client per authorization)
+    pub connected_client_pubkey: Option<String>,
+    /// When the client connected to this authorization
+    pub connected_at: Option<DateTime<chrono::Utc>>,
+    /// Optional label for admin tracking (e.g., person's name who received this authorization)
+    pub label: Option<String>,
+    /// The date and time the authorization was created
+    pub created_at: DateTime<chrono::Utc>,
+    /// The date and time the authorization was last updated
+    pub updated_at: DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, FromRow, Serialize, Deserialize)]
+pub struct AuthorizationWithRelations {
+    #[sqlx(flatten)]
+    pub authorization: Authorization,
+    #[sqlx(flatten)]
+    pub policy: Policy,
+    /// The bunker connection string (only available at creation time, None afterward)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bunker_connection_string: Option<String>,
+}
+
+impl Authorization {
+    pub async fn find(pool: &PgPool, tenant_id: i64, id: i32) -> Result<Self, AuthorizationError> {
+        let authorization = sqlx::query_as::<_, Authorization>(
+            "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
+                    relays, policy_id, max_uses, expires_at, connected_client_pubkey,
+                    connected_at, label, created_at, updated_at
+             FROM authorizations WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+        Ok(authorization)
+    }
+
+    pub async fn all_ids(pool: &PgPool, tenant_id: i64) -> Result<Vec<i32>, AuthorizationError> {
+        let authorizations = sqlx::query_scalar::<_, i32>(
+            r#"
+            SELECT id FROM authorizations WHERE tenant_id = $1
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(authorizations)
+    }
+
+    pub async fn all_ids_for_all_tenants(
+        pool: &PgPool,
+    ) -> Result<Vec<(i64, i32)>, AuthorizationError> {
+        let authorizations = sqlx::query_as::<_, (i64, i32)>(
+            r#"
+            SELECT tenant_id, id FROM authorizations
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(authorizations)
+    }
+
+    /// Get the stored key for this authorization
+    pub async fn stored_key(
+        &self,
+        pool: &PgPool,
+        tenant_id: i64,
+    ) -> Result<StoredKey, AuthorizationError> {
+        let stored_key = sqlx::query_as::<_, StoredKey>(
+            "SELECT id, team_id, name, pubkey, secret_key, created_at, updated_at
+             FROM stored_keys WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(self.stored_key_id)
+        .fetch_one(pool)
+        .await?;
+        Ok(stored_key)
+    }
+
+    /// Get the permissions for this authorization (async version)
+    /// Tenant isolation is enforced at authorization lookup level, not at permission level
+    pub async fn permissions(
+        &self,
+        pool: &PgPool,
+        _tenant_id: i64,
+    ) -> Result<Vec<Permission>, AuthorizationError> {
+        let permissions = sqlx::query_as::<_, Permission>(
+            "SELECT p.id, p.identifier, p.config, p.created_at, p.updated_at
+             FROM permissions p
+             JOIN policy_permissions pp ON pp.permission_id = p.id
+             JOIN policies pol ON pol.id = pp.policy_id
+             WHERE pol.id = $1",
+        )
+        .bind(self.policy_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(permissions)
+    }
+
+    /// Generate a bunker connection string (static helper for use at creation time).
+    ///
+    /// Format: `bunker://<remote-signer-pubkey>?relay=<encoded-relay-1,encoded-relay-2>&secret=<encoded-secret>`
+    ///
+    /// Uses the deployment-wide BUNKER_RELAYS configuration.
+    /// The plaintext secret is only available at creation time - after that only the hash is stored.
+    pub fn generate_bunker_url(bunker_public_key: &str, secret: &str) -> String {
+        let relays = Self::get_bunker_relays();
+
+        let relay_params = relays
+            .iter()
+            .map(|r| format!("relay={}", urlencoding::encode(r)))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        format!(
+            "bunker://{}?{}&secret={}",
+            bunker_public_key,
+            relay_params,
+            urlencoding::encode(secret),
+        )
+    }
+
+    /// Get the configured bunker relay list from environment
+    ///
+    /// Requires BUNKER_RELAYS environment variable to be set.
+    /// Panics if not configured - relay connections must be explicit.
+    pub fn get_bunker_relays() -> Vec<String> {
+        let relays_str =
+            std::env::var("BUNKER_RELAYS").expect("BUNKER_RELAYS environment variable is required");
+
+        let relays: Vec<String> = relays_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if relays.is_empty() {
+            panic!("BUNKER_RELAYS must contain at least one relay URL");
+        }
+
+        relays
+    }
+}

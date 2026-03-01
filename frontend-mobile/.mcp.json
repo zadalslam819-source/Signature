@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "nostr": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@nostrbook/mcp@latest"
+      ]
+    },
+    "dart": {
+      "command": "dart",
+      "args": [
+        "mcp-server"
+      ]
+    },
+    "figma": {
+      "url": "https://mcp.figma.com/mcp",
+      "type": "http"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+appId: co.openvine.app
+---
+#TC to comment a video and delete the comment just posted,
+# given the user is logged in in the app, and with the just commented video opened,
+# delete the comment in video
+#Steps:
+# 1. Open the comments of the video: Comments modal is displayed and the just posted comment is there
+# 2. Long press on *You: The Options modal is displayed
+# 3. Tap on "Delete": Comments modal closed and the comment is not present
+# 4. Close the comments modal and browse back
+
+# 1. Open the comments of the video: Comments modal is displayed and the just posted comment is there
+- tapOn:
+    id: comments_button
+- runFlow: "../asserts/assertCommentsModal.yaml"
+- assertVisible:
+    text: ".*•.*You.*"
+
+# 2. Long press on *You: The Options modal is displayed
+- longPressOn:
+    text: ".*•.*You.*"
+- runFlow: "../asserts/assertCommentsOptions.yaml"
+
+# 3. Tap on "Delete": Comments modal closed and the comment is not present
+- tapOn:
+    id: delete_comment_option
+- tapOn: Delete comment
+
+- runFlow: "../asserts/assertCommentsModal.yaml"
+- assertNotVisible:
+    text: ".*•.*You"
+
+# 4. Close the comments modal and browse back
+- swipe:
+    from:
+      text: "\\d+\\sComments?" # Matches one or more digits followed by " Comment" or " Comments"
+    direction: DOWN
+- tapOn: Close video player

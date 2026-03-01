@@ -1,0 +1,14 @@
+appId: co.openvine.app
+---
+- runFlow: ../tests/loginFreshInstall.yaml
+- runFlow: ../tests/videoLike.yaml
+
+#healthy app re-open
+- stopApp
+- launchApp
+
+- runFlow: ../tests/videoUnlike.yaml
+- runFlow: ../tests/removeKeys.yaml
+
+#Tear down
+- stopApp

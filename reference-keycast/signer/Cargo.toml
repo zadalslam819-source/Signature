@@ -1,0 +1,43 @@
+[package]
+name = "keycast_signer"
+description = "A Nostr remote signing daemon for the keycast application"
+authors = ["Keycast Authors"]
+version = "0.1.0"
+edition = "2021"
+
+# Library for signer logic (usable by unified binary and tests)
+[lib]
+name = "keycast_signer"
+path = "src/lib.rs"
+
+[dependencies]
+keycast_core = { path = "../core" }
+cluster-hashring = { path = "../cluster-hashring" }
+async-trait = "0.1"
+moka = { version = "0.12", features = ["future"] }
+axum = { workspace = true }
+chrono = { workspace = true }
+config = { workspace = true }
+crossbeam-channel = "0.5"
+ctrlc = "3.4"
+dotenv = { workspace = true }
+libc = "0.2"
+nostr-sdk = {workspace = true}
+num_cpus = "1.16"
+nostr = {workspace = true}
+nostr-connect = {version = "0.37", git="https://github.com/rust-nostr/nostr", rev="5ef7353789d54931b664639c11df1aa22e9aa37c"}
+once_cell = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { version = "0.6", features = ["trace", "util", "cors", "fs"] }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+bcrypt = "0.17.1"
+serde_json = { workspace = true }

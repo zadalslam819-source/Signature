@@ -1,0 +1,984 @@
+// ABOUTME: BLoC for managing comments on videos with threaded replies
+// ABOUTME: Handles loading, posting, likes, reporting, blocking, and sorting
+
+import 'dart:async';
+import 'dart:math';
+
+import 'package:bloc_concurrency/bloc_concurrency.dart';
+import 'package:comments_repository/comments_repository.dart';
+import 'package:equatable/equatable.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:likes_repository/likes_repository.dart';
+import 'package:meta/meta.dart' show visibleForTesting;
+import 'package:nostr_sdk/event_kind.dart';
+import 'package:openvine/repositories/follow_repository.dart';
+import 'package:openvine/services/auth_service.dart';
+import 'package:openvine/services/content_blocklist_service.dart';
+import 'package:openvine/services/content_moderation_service.dart';
+import 'package:openvine/services/content_reporting_service.dart';
+import 'package:openvine/services/mute_service.dart';
+import 'package:openvine/services/user_profile_service.dart';
+import 'package:openvine/utils/unified_logger.dart';
+
+part 'comments_event.dart';
+part 'comments_state.dart';
+
+/// BLoC for managing comments on a video.
+///
+/// Handles:
+/// - Loading comments from Nostr relays
+/// - Organizing comments chronologically
+/// - Managing input state for main comment and replies
+/// - Posting new comments
+/// - Liking/unliking comments
+/// - Reporting comments and blocking users
+/// - Sorting by newest, oldest, or top engagement
+class CommentsBloc extends Bloc<CommentsEvent, CommentsState> {
+  CommentsBloc({
+    required CommentsRepository commentsRepository,
+    required AuthService authService,
+    required LikesRepository likesRepository,
+    required Future<ContentReportingService> contentReportingServiceFuture,
+    required Future<MuteService> muteServiceFuture,
+    required ContentBlocklistService contentBlocklistService,
+    required String rootEventId,
+    required int rootEventKind,
+    required String rootAuthorPubkey,
+    String? rootAddressableId,
+    int? initialTotalCount,
+    UserProfileService? userProfileService,
+    FollowRepository? followRepository,
+  }) : _commentsRepository = commentsRepository,
+       _authService = authService,
+       _likesRepository = likesRepository,
+       _contentReportingServiceFuture = contentReportingServiceFuture,
+       _muteServiceFuture = muteServiceFuture,
+       _contentBlocklistService = contentBlocklistService,
+       _initialTotalCount = initialTotalCount,
+       _userProfileService = userProfileService,
+       _followRepository = followRepository,
+       super(
+         CommentsState(
+           rootEventId: rootEventId,
+           rootEventKind: rootEventKind,
+           rootAuthorPubkey: rootAuthorPubkey,
+           rootAddressableId: rootAddressableId,
+         ),
+       ) {
+    on<CommentsLoadRequested>(_onLoadRequested);
+    on<CommentsLoadMoreRequested>(_onLoadMoreRequested);
+    on<CommentTextChanged>(_onTextChanged);
+    on<CommentReplyToggled>(_onReplyToggled);
+    on<CommentSubmitted>(_onSubmitted);
+    on<CommentErrorCleared>(_onErrorCleared);
+    on<CommentDeleteRequested>(_onDeleteRequested);
+    // droppable() prevents concurrent processing of the SAME event type,
+    // but the manual voteInProgressCommentId guard prevents
+    // rapid toggles on DIFFERENT comment IDs from racing each other.
+    on<CommentUpvoteToggled>(_onUpvoteToggled, transformer: droppable());
+    on<CommentDownvoteToggled>(_onDownvoteToggled, transformer: droppable());
+    on<CommentVoteCountsFetchRequested>(_onVoteCountsFetchRequested);
+    on<CommentsSortModeChanged>(_onSortModeChanged);
+    on<CommentReportRequested>(_onReportRequested, transformer: droppable());
+    on<CommentBlockUserRequested>(
+      _onBlockUserRequested,
+      transformer: droppable(),
+    );
+    on<MentionSearchRequested>(
+      _onMentionSearchRequested,
+      transformer: restartable(),
+    );
+    on<MentionRegistered>(_onMentionRegistered);
+    on<MentionSuggestionsCleared>(_onMentionSuggestionsCleared);
+    on<CommentEditModeEntered>(_onEditModeEntered);
+    on<CommentEditModeCancelled>(_onEditModeCancelled);
+    on<CommentEditSubmitted>(_onEditSubmitted);
+    on<NewCommentReceived>(_onNewCommentReceived);
+    on<NewCommentsAcknowledged>(_onNewCommentsAcknowledged);
+  }
+
+  /// Page size for comment loading.
+  static const _pageSize = 50;
+
+  /// Optional initial total count from video metadata or interactions state.
+  /// Used to accurately determine hasMoreContent instead of page size heuristic.
+  final int? _initialTotalCount;
+
+  final CommentsRepository _commentsRepository;
+  final AuthService _authService;
+  StreamSubscription<Comment>? _commentStreamSubscription;
+  final LikesRepository _likesRepository;
+  final Future<ContentReportingService> _contentReportingServiceFuture;
+  final Future<MuteService> _muteServiceFuture;
+  final ContentBlocklistService _contentBlocklistService;
+  final UserProfileService? _userProfileService;
+  final FollowRepository? _followRepository;
+
+  Future<void> _onLoadRequested(
+    CommentsLoadRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    if (state.status == CommentsStatus.loading) return;
+
+    emit(state.copyWith(status: CommentsStatus.loading));
+
+    try {
+      final thread = await _commentsRepository.loadComments(
+        rootEventId: state.rootEventId,
+        rootEventKind: state.rootEventKind,
+        rootAddressableId: state.rootAddressableId,
+        limit: _pageSize,
+      );
+
+      // Convert to Map for O(1) deduplication on pagination
+      final commentsById = {for (final c in thread.comments) c.id: c};
+
+      // Determine if there are more comments to load:
+      // 1. If we have a known total count, compare loaded count to it
+      // 2. Otherwise, use page size heuristic (if we got a full page, there might be more)
+      final hasMore = _initialTotalCount != null
+          ? thread.comments.length < _initialTotalCount
+          : thread.comments.length >= _pageSize;
+
+      emit(
+        state.copyWith(
+          status: CommentsStatus.success,
+          commentsById: commentsById,
+          hasMoreContent: hasMore,
+          replyCountsByCommentId: _computeReplyCounts(commentsById),
+        ),
+      );
+
+      add(const CommentVoteCountsFetchRequested());
+      _startWatchingComments();
+    } catch (e) {
+      Log.error(
+        'Error loading comments: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+      emit(
+        state.copyWith(
+          status: CommentsStatus.failure,
+          error: CommentsError.loadFailed,
+        ),
+      );
+    }
+  }
+
+  Future<void> _onLoadMoreRequested(
+    CommentsLoadMoreRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    // Skip if not in success state, already loading more, or no more content
+    if (state.status != CommentsStatus.success ||
+        state.isLoadingMore ||
+        !state.hasMoreContent ||
+        state.commentsById.isEmpty) {
+      return;
+    }
+
+    emit(state.copyWith(isLoadingMore: true));
+
+    try {
+      // Get the oldest comment's timestamp as cursor for pagination
+      // Note: Nostr `until` filter is inclusive, so we may get duplicates
+      // which are automatically deduplicated by the Map
+      final oldestComment = state.comments.last;
+      final cursor = oldestComment.createdAt;
+
+      Log.info(
+        'Loading more comments before $cursor',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+
+      final thread = await _commentsRepository.loadComments(
+        rootEventId: state.rootEventId,
+        rootEventKind: state.rootEventKind,
+        rootAddressableId: state.rootAddressableId,
+        limit: _pageSize,
+        before: cursor,
+      );
+
+      // Merge new comments into the Map - duplicates are automatically replaced
+      // This handles the edge case where multiple comments have the same timestamp
+      final allCommentsById = {
+        ...state.commentsById,
+        for (final c in thread.comments) c.id: c,
+      };
+
+      // Determine if there are more comments to load:
+      // 1. If we have a known total count, compare loaded count to it
+      // 2. Otherwise, use page size heuristic (if we got a full page, there might be more)
+      final hasMore = _initialTotalCount != null
+          ? allCommentsById.length < _initialTotalCount
+          : thread.comments.length >= _pageSize;
+
+      emit(
+        state.copyWith(
+          commentsById: allCommentsById,
+          isLoadingMore: false,
+          hasMoreContent: hasMore,
+          replyCountsByCommentId: _computeReplyCounts(allCommentsById),
+        ),
+      );
+
+      add(const CommentVoteCountsFetchRequested());
+
+      Log.info(
+        'Loaded ${thread.comments.length} more comments '
+        '(total: ${allCommentsById.length}, hasMore: $hasMore)',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+    } catch (e) {
+      Log.error(
+        'Error loading more comments: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+      emit(state.copyWith(isLoadingMore: false));
+    }
+  }
+
+  void _onTextChanged(CommentTextChanged event, Emitter<CommentsState> emit) {
+    // Edit mode: update edit buffer instead of main/reply input
+    if (state.activeEditCommentId != null) {
+      emit(state.copyWith(editInputText: event.text));
+    } else if (event.commentId == null) {
+      emit(state.copyWith(mainInputText: event.text));
+    } else {
+      emit(state.copyWith(replyInputText: event.text));
+    }
+  }
+
+  void _onReplyToggled(CommentReplyToggled event, Emitter<CommentsState> emit) {
+    if (state.activeReplyCommentId == event.commentId) {
+      emit(state.clearActiveReply());
+    } else {
+      emit(
+        state.copyWith(
+          activeReplyCommentId: event.commentId,
+          replyInputText: '',
+        ),
+      );
+    }
+  }
+
+  Future<void> _onSubmitted(
+    CommentSubmitted event,
+    Emitter<CommentsState> emit,
+  ) async {
+    final isReply = event.parentCommentId != null;
+    var text = isReply
+        ? state.replyInputText.trim()
+        : state.mainInputText.trim();
+
+    if (text.isEmpty) return;
+
+    if (!_authService.isAuthenticated) {
+      emit(state.copyWith(error: CommentsError.notAuthenticated));
+      return;
+    }
+
+    // Convert @displayName mentions to nostr:npub format
+    if (state.activeMentions.isNotEmpty) {
+      // Sort by display name length descending to prevent partial replacements
+      final sortedEntries = state.activeMentions.entries.toList()
+        ..sort((a, b) => b.key.length.compareTo(a.key.length));
+      for (final entry in sortedEntries) {
+        text = text.replaceAll('@${entry.key}', 'nostr:${entry.value}');
+      }
+    }
+
+    emit(state.copyWith(isPosting: true));
+
+    try {
+      final postedComment = await _commentsRepository.postComment(
+        content: text,
+        rootEventId: state.rootEventId,
+        rootEventKind: state.rootEventKind,
+        rootEventAuthorPubkey: state.rootAuthorPubkey,
+        rootAddressableId: state.rootAddressableId,
+        replyToEventId: event.parentCommentId,
+        replyToAuthorPubkey: event.parentAuthorPubkey,
+      );
+
+      // Add new comment to the Map
+      final updatedCommentsById = {
+        ...state.commentsById,
+        postedComment.id: postedComment,
+      };
+
+      if (isReply) {
+        emit(
+          state.clearActiveReply(
+            commentsById: updatedCommentsById,
+            isPosting: false,
+          ),
+        );
+      } else {
+        emit(
+          state.copyWith(
+            commentsById: updatedCommentsById,
+            mainInputText: '',
+            isPosting: false,
+            activeMentions: const {},
+          ),
+        );
+      }
+    } catch (e) {
+      Log.error(
+        'Error posting comment: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+
+      emit(
+        state.copyWith(
+          isPosting: false,
+          error: isReply
+              ? CommentsError.postReplyFailed
+              : CommentsError.postCommentFailed,
+        ),
+      );
+    }
+  }
+
+  void _onErrorCleared(CommentErrorCleared event, Emitter<CommentsState> emit) {
+    emit(state.copyWith());
+  }
+
+  Future<void> _onDeleteRequested(
+    CommentDeleteRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    if (!_authService.isAuthenticated) {
+      emit(state.copyWith(error: CommentsError.notAuthenticated));
+      return;
+    }
+
+    try {
+      await _commentsRepository.deleteComment(commentId: event.commentId);
+
+      // Remove the comment from the Map
+      final updatedCommentsById = Map<String, Comment>.from(state.commentsById)
+        ..remove(event.commentId);
+
+      emit(
+        state.copyWith(
+          commentsById: updatedCommentsById,
+          replyCountsByCommentId: _computeReplyCounts(updatedCommentsById),
+        ),
+      );
+    } catch (e) {
+      Log.error(
+        'Error deleting comment: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+
+      emit(state.copyWith(error: CommentsError.deleteCommentFailed));
+    }
+  }
+
+  Future<void> _onVoteCountsFetchRequested(
+    CommentVoteCountsFetchRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    if (state.commentsById.isEmpty) return;
+
+    try {
+      final commentIds = state.commentsById.keys.toList();
+
+      // Fetch vote counts and user vote statuses in parallel
+      final results = await Future.wait([
+        _likesRepository.getVoteCounts(commentIds),
+        _likesRepository.getUserVoteStatuses(commentIds),
+      ]);
+
+      final voteCounts =
+          results[0]
+              as ({Map<String, int> upvotes, Map<String, int> downvotes});
+      final voteStatuses =
+          results[1] as ({Set<String> upvotedIds, Set<String> downvotedIds});
+
+      emit(
+        state.copyWith(
+          commentUpvoteCounts: voteCounts.upvotes,
+          commentDownvoteCounts: voteCounts.downvotes,
+          upvotedCommentIds: voteStatuses.upvotedIds,
+          downvotedCommentIds: voteStatuses.downvotedIds,
+        ),
+      );
+    } catch (e) {
+      Log.error(
+        'Error fetching comment vote counts: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+    }
+  }
+
+  Future<void> _onUpvoteToggled(
+    CommentUpvoteToggled event,
+    Emitter<CommentsState> emit,
+  ) async => _onVoteToggled(
+    commentId: event.commentId,
+    authorPubkey: event.authorPubkey,
+    isUpvote: true,
+    emit: emit,
+  );
+
+  Future<void> _onDownvoteToggled(
+    CommentDownvoteToggled event,
+    Emitter<CommentsState> emit,
+  ) async => _onVoteToggled(
+    commentId: event.commentId,
+    authorPubkey: event.authorPubkey,
+    isUpvote: false,
+    emit: emit,
+  );
+
+  Future<void> _onVoteToggled({
+    required String commentId,
+    required String authorPubkey,
+    required bool isUpvote,
+    required Emitter<CommentsState> emit,
+  }) async {
+    if (!_authService.isAuthenticated) {
+      emit(state.copyWith(error: CommentsError.notAuthenticated));
+      return;
+    }
+
+    // Prevent double-tap on the same comment
+    if (state.voteInProgressCommentId == commentId) return;
+
+    final wasUpvoted = state.upvotedCommentIds.contains(commentId);
+    final wasDownvoted = state.downvotedCommentIds.contains(commentId);
+    final hadSameVote = isUpvote ? wasUpvoted : wasDownvoted;
+    final hadOppositeVote = isUpvote ? wasDownvoted : wasUpvoted;
+    final prevUpCount = state.commentUpvoteCounts[commentId] ?? 0;
+    final prevDownCount = state.commentDownvoteCounts[commentId] ?? 0;
+
+    // Optimistic update
+    final upIds = Set<String>.from(state.upvotedCommentIds);
+    final downIds = Set<String>.from(state.downvotedCommentIds);
+    final upCounts = Map<String, int>.from(state.commentUpvoteCounts);
+    final downCounts = Map<String, int>.from(state.commentDownvoteCounts);
+
+    final sameIds = isUpvote ? upIds : downIds;
+    final sameCounts = isUpvote ? upCounts : downCounts;
+    final prevSameCount = isUpvote ? prevUpCount : prevDownCount;
+    final oppositeIds = isUpvote ? downIds : upIds;
+    final oppositeCounts = isUpvote ? downCounts : upCounts;
+    final prevOppositeCount = isUpvote ? prevDownCount : prevUpCount;
+
+    if (hadSameVote) {
+      // Remove own vote
+      sameIds.remove(commentId);
+      sameCounts[commentId] = max(0, prevSameCount - 1);
+    } else {
+      // Add vote
+      sameIds.add(commentId);
+      sameCounts[commentId] = prevSameCount + 1;
+      // Remove opposite vote if present
+      if (hadOppositeVote) {
+        oppositeIds.remove(commentId);
+        oppositeCounts[commentId] = max(0, prevOppositeCount - 1);
+      }
+    }
+
+    emit(
+      state.copyWith(
+        upvotedCommentIds: upIds,
+        downvotedCommentIds: downIds,
+        commentUpvoteCounts: upCounts,
+        commentDownvoteCounts: downCounts,
+        voteInProgressCommentId: commentId,
+      ),
+    );
+
+    try {
+      if (hadSameVote) {
+        // Remove existing vote
+        if (isUpvote) {
+          await _likesRepository.toggleLike(
+            eventId: commentId,
+            authorPubkey: authorPubkey,
+            targetKind: EventKind.comment,
+          );
+        } else {
+          await _likesRepository.unlikeEvent(commentId);
+        }
+      } else {
+        // Remove opposite vote if present, then add new vote
+        if (hadOppositeVote) {
+          await _likesRepository.unlikeEvent(commentId);
+        }
+        if (isUpvote) {
+          await _likesRepository.likeEvent(
+            eventId: commentId,
+            authorPubkey: authorPubkey,
+            targetKind: EventKind.comment,
+          );
+        } else {
+          await _likesRepository.downvoteEvent(
+            eventId: commentId,
+            authorPubkey: authorPubkey,
+            targetKind: EventKind.comment,
+          );
+        }
+      }
+
+      // Clear in-progress guard
+      emit(state.copyWith());
+    } catch (e) {
+      Log.error(
+        'Error toggling comment ${isUpvote ? 'upvote' : 'downvote'}: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+
+      // Revert optimistic update
+      emit(
+        state.copyWith(
+          upvotedCommentIds: Set<String>.from(state.upvotedCommentIds)
+            ..addAll(wasUpvoted ? {commentId} : {})
+            ..removeAll(wasUpvoted ? {} : {commentId}),
+          downvotedCommentIds: Set<String>.from(state.downvotedCommentIds)
+            ..addAll(wasDownvoted ? {commentId} : {})
+            ..removeAll(wasDownvoted ? {} : {commentId}),
+          commentUpvoteCounts: Map<String, int>.from(state.commentUpvoteCounts)
+            ..[commentId] = prevUpCount,
+          commentDownvoteCounts: Map<String, int>.from(
+            state.commentDownvoteCounts,
+          )..[commentId] = prevDownCount,
+          error: CommentsError.voteFailed,
+        ),
+      );
+    }
+  }
+
+  void _onSortModeChanged(
+    CommentsSortModeChanged event,
+    Emitter<CommentsState> emit,
+  ) {
+    emit(state.copyWith(sortMode: event.sortMode));
+  }
+
+  Future<void> _onReportRequested(
+    CommentReportRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    try {
+      final reportingService = await _contentReportingServiceFuture;
+      await reportingService.reportContent(
+        eventId: event.commentId,
+        authorPubkey: event.authorPubkey,
+        reason: event.reason,
+        details: event.details,
+      );
+    } catch (e) {
+      Log.error(
+        'Error reporting comment: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+      emit(state.copyWith(error: CommentsError.reportFailed));
+    }
+  }
+
+  Future<void> _onBlockUserRequested(
+    CommentBlockUserRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    try {
+      // Publish mute list update to relays
+      final muteService = await _muteServiceFuture;
+      await muteService.muteUser(event.authorPubkey);
+
+      // Block locally for immediate runtime filtering
+      _contentBlocklistService.blockUser(event.authorPubkey);
+
+      // Remove all comments by the blocked user
+      final updatedCommentsById = Map<String, Comment>.from(state.commentsById)
+        ..removeWhere(
+          (_, comment) => comment.authorPubkey == event.authorPubkey,
+        );
+
+      emit(
+        state.copyWith(
+          commentsById: updatedCommentsById,
+          replyCountsByCommentId: _computeReplyCounts(updatedCommentsById),
+        ),
+      );
+    } catch (e) {
+      Log.error(
+        'Error blocking user: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+      emit(state.copyWith(error: CommentsError.blockFailed));
+    }
+  }
+
+  void _onEditModeEntered(
+    CommentEditModeEntered event,
+    Emitter<CommentsState> emit,
+  ) {
+    // Clear any active reply, then enter edit mode
+    emit(
+      state.clearActiveReply().copyWith(
+        activeEditCommentId: event.commentId,
+        editInputText: event.originalContent,
+      ),
+    );
+  }
+
+  void _onEditModeCancelled(
+    CommentEditModeCancelled event,
+    Emitter<CommentsState> emit,
+  ) {
+    emit(state.clearEditMode());
+  }
+
+  Future<void> _onEditSubmitted(
+    CommentEditSubmitted event,
+    Emitter<CommentsState> emit,
+  ) async {
+    final editedText = state.editInputText.trim();
+    if (editedText.isEmpty) return;
+
+    if (!_authService.isAuthenticated) {
+      emit(state.copyWith(error: CommentsError.notAuthenticated));
+      return;
+    }
+
+    final originalCommentId = state.activeEditCommentId;
+    if (originalCommentId == null) return;
+
+    final originalComment = state.commentsById[originalCommentId];
+    if (originalComment == null) return;
+
+    emit(state.copyWith(isPosting: true));
+
+    try {
+      // Step 1: Delete the original comment
+      await _commentsRepository.deleteComment(commentId: originalCommentId);
+
+      // Step 2: Post new comment with same threading tags
+      final postedComment = await _commentsRepository.postComment(
+        content: editedText,
+        rootEventId: state.rootEventId,
+        rootEventKind: state.rootEventKind,
+        rootEventAuthorPubkey: state.rootAuthorPubkey,
+        rootAddressableId: state.rootAddressableId,
+        replyToEventId: originalComment.replyToEventId,
+        replyToAuthorPubkey: originalComment.replyToAuthorPubkey,
+      );
+
+      // Remove old comment, add new one
+      final updatedCommentsById = Map<String, Comment>.from(state.commentsById)
+        ..remove(originalCommentId)
+        ..[postedComment.id] = postedComment;
+
+      emit(
+        state.clearEditMode(
+          commentsById: updatedCommentsById,
+          isPosting: false,
+          replyCountsByCommentId: _computeReplyCounts(updatedCommentsById),
+        ),
+      );
+    } catch (e) {
+      Log.error(
+        'Error editing comment: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+
+      emit(
+        state.copyWith(
+          isPosting: false,
+          error: CommentsError.postCommentFailed,
+        ),
+      );
+    }
+  }
+
+  Future<void> _onMentionSearchRequested(
+    MentionSearchRequested event,
+    Emitter<CommentsState> emit,
+  ) async {
+    final query = event.query.toLowerCase();
+    if (query.isEmpty) {
+      emit(state.copyWith(mentionQuery: '', mentionSuggestions: []));
+      return;
+    }
+
+    // Tier 1: Instant local search from known pubkeys
+    final seen = <String>{};
+    final suggestions = <MentionSuggestion>[];
+
+    // Collect candidate pubkeys: video author + comment participants + following
+    final candidatePubkeys = <String>[];
+
+    // Video author first (priority)
+    if (state.rootAuthorPubkey.isNotEmpty) {
+      candidatePubkeys.add(state.rootAuthorPubkey);
+    }
+
+    // Comment participants
+    for (final comment in state.commentsById.values) {
+      candidatePubkeys.add(comment.authorPubkey);
+    }
+
+    // Following list
+    final followingPubkeys = _followRepository?.followingPubkeys ?? [];
+    candidatePubkeys.addAll(followingPubkeys);
+
+    // Filter by query match on cached profile names
+    for (final pubkey in candidatePubkeys) {
+      if (seen.contains(pubkey)) continue;
+      seen.add(pubkey);
+
+      final profile = _userProfileService?.getCachedProfile(pubkey);
+      final displayName = profile?.displayName ?? profile?.name;
+
+      // Match query against display name (case-insensitive contains)
+      if (displayName != null && displayName.toLowerCase().contains(query)) {
+        suggestions.add(
+          MentionSuggestion(
+            pubkey: pubkey,
+            displayName: displayName,
+            picture: profile?.picture,
+          ),
+        );
+      }
+
+      if (suggestions.length >= 5) break;
+    }
+
+    emit(
+      state.copyWith(
+        mentionQuery: query,
+        mentionSuggestions: suggestions.take(5).toList(),
+      ),
+    );
+
+    // Tier 2: Async remote search if <5 local results
+    if (suggestions.length < 5 && _userProfileService != null) {
+      try {
+        final remoteResults = await _userProfileService.searchUsers(
+          query,
+          limit: 10,
+        );
+
+        // Merge with local results, deduplicating by pubkey
+        final mergedSuggestions = List<MentionSuggestion>.from(suggestions);
+        for (final profile in remoteResults) {
+          if (seen.contains(profile.pubkey)) continue;
+          seen.add(profile.pubkey);
+
+          final name = profile.displayName ?? profile.name;
+          if (name == null) continue;
+
+          mergedSuggestions.add(
+            MentionSuggestion(
+              pubkey: profile.pubkey,
+              displayName: name,
+              picture: profile.picture,
+            ),
+          );
+
+          if (mergedSuggestions.length >= 5) break;
+        }
+
+        emit(
+          state.copyWith(
+            mentionQuery: query,
+            mentionSuggestions: mergedSuggestions.take(5).toList(),
+          ),
+        );
+      } catch (e) {
+        // Tier 2 failure is non-fatal; local results remain visible
+        Log.warning(
+          'Mention search failed: $e',
+          name: 'CommentsBloc',
+          category: LogCategory.ui,
+        );
+      }
+    }
+  }
+
+  void _onMentionRegistered(
+    MentionRegistered event,
+    Emitter<CommentsState> emit,
+  ) {
+    final updatedMentions = Map<String, String>.from(state.activeMentions)
+      ..[event.displayName] = event.npub;
+    emit(state.copyWith(activeMentions: updatedMentions));
+  }
+
+  void _onMentionSuggestionsCleared(
+    MentionSuggestionsCleared event,
+    Emitter<CommentsState> emit,
+  ) {
+    emit(state.copyWith(mentionQuery: '', mentionSuggestions: []));
+  }
+
+  void _onNewCommentReceived(
+    NewCommentReceived event,
+    Emitter<CommentsState> emit,
+  ) {
+    final comment = event.comment;
+
+    // Skip if already in the map (dedup with optimistic posts)
+    if (state.commentsById.containsKey(comment.id)) return;
+
+    // Skip if author is blocked
+    if (_contentBlocklistService.isBlocked(comment.authorPubkey)) return;
+
+    final updatedCommentsById = {...state.commentsById, comment.id: comment};
+
+    emit(
+      state.copyWith(
+        commentsById: updatedCommentsById,
+        replyCountsByCommentId: _computeReplyCounts(updatedCommentsById),
+        newCommentCount: state.newCommentCount + 1,
+      ),
+    );
+  }
+
+  void _onNewCommentsAcknowledged(
+    NewCommentsAcknowledged event,
+    Emitter<CommentsState> emit,
+  ) {
+    emit(state.copyWith(newCommentCount: 0));
+  }
+
+  /// Maximum number of real-time comments to accept per second.
+  /// Beyond this rate the stream is paused briefly to avoid UI thrashing
+  /// on viral videos.
+  static const _maxCommentsPerSecond = 10;
+
+  /// Starts the real-time comment subscription.
+  ///
+  /// Called directly from [_onLoadRequested] after a successful load so that
+  /// the `since` timestamp aligns with the initial load. Opens a persistent
+  /// Nostr subscription and routes incoming comments through
+  /// [NewCommentReceived].
+  void _startWatchingComments() {
+    // Cancel any existing subscription before starting a new one
+    _commentStreamSubscription?.cancel();
+
+    try {
+      final stream = _commentsRepository.watchComments(
+        rootEventId: state.rootEventId,
+        rootEventKind: state.rootEventKind,
+        rootAddressableId: state.rootAddressableId,
+        since: DateTime.now(),
+      );
+
+      _commentStreamSubscription = _throttledListen(
+        stream,
+        maxPerSecond: _maxCommentsPerSecond,
+        onData: (comment) {
+          add(NewCommentReceived(comment));
+        },
+        onError: (Object e) {
+          Log.warning(
+            'Comment watch stream error: $e',
+            name: 'CommentsBloc',
+            category: LogCategory.ui,
+          );
+        },
+      );
+    } catch (e) {
+      Log.warning(
+        'Failed to start watching comments: $e',
+        name: 'CommentsBloc',
+        category: LogCategory.ui,
+      );
+    }
+  }
+
+  /// Listens to [stream] but drops events that exceed [maxPerSecond].
+  ///
+  /// Uses a simple token-bucket approach: each second refills the budget.
+  /// Events arriving after the budget is exhausted are silently dropped
+  /// until the next second window, preventing UI thrashing on viral videos.
+  StreamSubscription<T> _throttledListen<T>(
+    Stream<T> stream, {
+    required int maxPerSecond,
+    required void Function(T) onData,
+    void Function(Object)? onError,
+  }) {
+    var budget = maxPerSecond;
+    Timer? refillTimer;
+
+    void startRefill() {
+      refillTimer?.cancel();
+      refillTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        budget = maxPerSecond;
+      });
+    }
+
+    startRefill();
+
+    return stream.listen(
+      (event) {
+        if (budget > 0) {
+          budget--;
+          onData(event);
+        }
+      },
+      onError: onError,
+      onDone: () {
+        refillTimer?.cancel();
+      },
+    );
+  }
+
+  @override
+  Future<void> close() async {
+    await _commentStreamSubscription?.cancel();
+    await _commentsRepository.stopWatchingComments();
+    return super.close();
+  }
+
+  /// Computes an engagement score for ranking comments.
+  ///
+  /// Score = (max(0, netScore) + replies*2) / (ageHours + 2)^1.2
+  /// where netScore = upvotes - downvotes.
+  /// Higher scores indicate more engaging, recent content.
+  @visibleForTesting
+  static double engagementScore({
+    required Comment comment,
+    required DateTime now,
+    required Map<String, int> likeCounts,
+    required Map<String, int> replyCounts,
+  }) {
+    final netScore = likeCounts[comment.id] ?? 0;
+    final replies = replyCounts[comment.id] ?? 0;
+    final engagement = max(0, netScore) + (replies * 2);
+    final ageHours = now.difference(comment.createdAt).inMinutes / 60.0;
+    return engagement / pow(ageHours + 2, 1.2);
+  }
+
+  /// Computes reply counts per comment ID from a comments map.
+  /// Returns a map of comment ID → number of replies targeting it.
+  static Map<String, int> _computeReplyCounts(
+    Map<String, Comment> commentsById,
+  ) {
+    final counts = <String, int>{};
+    for (final comment in commentsById.values) {
+      final parentId = comment.replyToEventId;
+      if (parentId != null && parentId.isNotEmpty) {
+        counts[parentId] = (counts[parentId] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
+}

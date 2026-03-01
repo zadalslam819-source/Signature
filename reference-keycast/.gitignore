@@ -1,0 +1,60 @@
+.DS_Store
+/target
+node_modules/
+master.key
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+.envrc
+
+# Service account credentials
+*service-account*.json
+credentials.json
+*-sa.json
+*-sa-*.json
+keycast-migration*.json
+
+# Migration artifacts
+migration-*.log
+migration-checkpoint.json
+
+# Git worktrees
+.worktrees/
+
+# Claude Code local files
+.claude/
+.claude/settings.local.json
+.specify/
+api/oauth-ui/
+specs/
+examples/auth-flows-demo/
+
+# Machine-specific Kamal deployment (Pi homelab only, not for production)
+config/deploy.yml
+.kamal/
+scripts/deploy-to-pi.sh
+.tms-create
+tests/qa/target/
+keycast-login/dist/
+.claude/settings.local.json
+
+# Load testing artifacts
+loadtest-results.json
+loadtest-users.json
+scale-test-results/
+
+
+# Local k8s test manifests (Kind clusters, target postgres, etc.)
+k8s_local_tests/
+
+# E2E test artifacts
+e2e/test-results/
+web/test-results/
+e2e/playwright-report/
+.playwright-mcp/
+
+# MCP cache
+.repo-cache/

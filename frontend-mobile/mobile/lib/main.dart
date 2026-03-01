@@ -1,0 +1,1216 @@
+import 'dart:async';
+import 'dart:io'
+    if (dart.library.html) 'package:openvine/utils/platform_io_web.dart'
+    as io;
+
+import 'package:audio_session/audio_session.dart';
+import 'package:db_client/db_client.dart';
+import 'package:divine_ui/divine_ui.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
+import 'package:openvine/blocs/background_publish/background_publish_bloc.dart';
+import 'package:openvine/blocs/camera_permission/camera_permission_bloc.dart';
+import 'package:openvine/blocs/email_verification/email_verification_cubit.dart';
+import 'package:openvine/config/zendesk_config.dart';
+import 'package:openvine/network/vine_cdn_http_overrides.dart'
+    if (dart.library.html) 'package:openvine/utils/platform_io_web.dart';
+import 'package:openvine/providers/app_providers.dart';
+import 'package:openvine/providers/deep_link_provider.dart';
+import 'package:openvine/providers/environment_provider.dart';
+import 'package:openvine/providers/nostr_client_provider.dart';
+import 'package:openvine/providers/shared_preferences_provider.dart';
+import 'package:openvine/router/router.dart';
+import 'package:openvine/screens/explore_screen.dart';
+import 'package:openvine/screens/feed/video_feed_page.dart';
+import 'package:openvine/screens/hashtag_screen_router.dart';
+import 'package:openvine/screens/notifications_screen.dart';
+import 'package:openvine/screens/profile_screen_router.dart';
+import 'package:openvine/screens/pure/search_screen_pure.dart';
+import 'package:openvine/screens/video_detail_screen.dart';
+import 'package:openvine/services/back_button_handler.dart';
+import 'package:openvine/services/bandwidth_tracker_service.dart';
+import 'package:openvine/services/crash_reporting_service.dart';
+import 'package:openvine/services/deep_link_service.dart';
+import 'package:openvine/services/draft_migration_service.dart';
+import 'package:openvine/services/draft_storage_service.dart';
+import 'package:openvine/services/logging_config_service.dart';
+import 'package:openvine/services/openvine_media_cache.dart';
+import 'package:openvine/services/performance_monitoring_service.dart';
+import 'package:openvine/services/seed_data_preload_service.dart';
+import 'package:openvine/services/seed_media_preload_service.dart';
+import 'package:openvine/services/startup_performance_service.dart';
+import 'package:openvine/services/video_publish/video_publish_service.dart';
+import 'package:openvine/services/zendesk_support_service.dart';
+import 'package:openvine/utils/log_message_batcher.dart';
+import 'package:openvine/utils/unified_logger.dart';
+import 'package:openvine/widgets/app_lifecycle_handler.dart';
+import 'package:openvine/widgets/geo_blocking_gate.dart';
+import 'package:permissions_service/permissions_service.dart';
+import 'package:pooled_video_player/pooled_video_player.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_manager/window_manager.dart';
+
+Future<void> _startOpenVineApp() async {
+  // Add timing logs for startup diagnostics
+  final startTime = DateTime.now();
+
+  // Ensure bindings are initialized first (required for everything)
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Lock app to portrait mode only (portrait up and portrait down)
+  // Skip on desktop platforms where orientation lock doesn't apply
+  if (!kIsWeb &&
+      defaultTargetPlatform != TargetPlatform.macOS &&
+      defaultTargetPlatform != TargetPlatform.windows &&
+      defaultTargetPlatform != TargetPlatform.linux) {
+    // CRITICAL: Lock to portraitUp ONLY for proper camera orientation
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
+
+  // Initialize startup performance monitoring FIRST
+  await StartupPerformanceService.instance.initialize();
+  StartupPerformanceService.instance.startPhase('bindings');
+
+  // NOTE: Native video players (AVPlayer on iOS/macOS, ExoPlayer on Android)
+  // do not require explicit initialization like media_kit did.
+  // They initialize automatically when VideoPlayerController is first created.
+  //
+  // NOTE: video_player_web_hls auto-registers for HLS support on web.
+  // Just needs <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  // in web/index.html (already added).
+
+  StartupPerformanceService.instance.completePhase('bindings');
+
+  // Configure audio session to respect mute switch on iOS
+  // When device is in silent mode, videos play without audio (user expectation)
+  StartupPerformanceService.instance.startPhase('audio_session');
+  try {
+    final session = await AudioSession.instance;
+    await session.configure(
+      const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.ambient,
+        avAudioSessionMode: AVAudioSessionMode.defaultMode,
+        avAudioSessionCategoryOptions:
+            AVAudioSessionCategoryOptions.mixWithOthers,
+      ),
+    );
+    Log.info(
+      'Audio session configured to respect mute switch',
+      name: 'Main',
+      category: LogCategory.system,
+    );
+  } catch (e) {
+    Log.warning(
+      'Failed to configure audio session: $e',
+      name: 'Main',
+      category: LogCategory.system,
+    );
+  }
+  StartupPerformanceService.instance.completePhase('audio_session');
+
+  // Initialize crash reporting ASAP so we can use it for logging
+  StartupPerformanceService.instance.startPhase('crash_reporting');
+  await CrashReportingService.instance.initialize();
+  StartupPerformanceService.instance.completePhase('crash_reporting');
+
+  // Initialize performance monitoring (depends on Firebase Core from crash reporting)
+  StartupPerformanceService.instance.startPhase('performance_monitoring');
+  await PerformanceMonitoringService.instance.initialize();
+  StartupPerformanceService.instance.completePhase('performance_monitoring');
+
+  // Now we can start logging
+  Log.info(
+    '[STARTUP] App initialization started at $startTime',
+    name: 'Main',
+    category: LogCategory.system,
+  );
+  CrashReportingService.instance.logInitializationStep('Bindings initialized');
+  StartupPerformanceService.instance.checkpoint('crash_reporting_ready');
+
+  // Enable DNS override for legacy Vine CDN domains if configured (not supported on web)
+  if (!kIsWeb) {
+    const bool enableVineCdnFix = bool.fromEnvironment(
+      'VINE_CDN_DNS_FIX',
+      defaultValue: true,
+    );
+    const String cdnIp = String.fromEnvironment(
+      'VINE_CDN_IP',
+      defaultValue: '151.101.244.157',
+    );
+    if (enableVineCdnFix) {
+      final ip = io.InternetAddress.tryParse(cdnIp);
+      if (ip != null) {
+        io.HttpOverrides.global = VineCdnHttpOverrides(overrideAddress: ip);
+        Log.info('Enabled Vine CDN DNS override to $cdnIp', name: 'Networking');
+      } else {
+        Log.warning(
+          'Invalid VINE_CDN_IP "$cdnIp". DNS override not applied.',
+          name: 'Networking',
+        );
+      }
+    }
+  }
+
+  // DEFER window manager initialization until after UI is ready to avoid blocking
+  if (defaultTargetPlatform == TargetPlatform.macOS ||
+      defaultTargetPlatform == TargetPlatform.linux) {
+    // Defer window manager setup to not block main thread during critical startup
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        StartupPerformanceService.instance.startPhase('window_manager');
+        CrashReportingService.instance.logInitializationStep(
+          'Initializing window manager',
+        );
+        await windowManager.ensureInitialized();
+
+        // Set initial window size for desktop vine experience
+        const initialWindowOptions = WindowOptions(
+          size: Size(750, 950), // Wider, better proportioned for desktop
+          minimumSize: Size(
+            WindowSizeConstants.baseWidth,
+            WindowSizeConstants.baseHeight,
+          ),
+          center: true,
+          backgroundColor: Colors.black,
+          skipTaskbar: false,
+          titleBarStyle: TitleBarStyle.normal,
+        );
+
+        await windowManager.waitUntilReadyToShow(
+          initialWindowOptions,
+          () async {
+            await windowManager.show();
+            await windowManager.focus();
+          },
+        );
+
+        StartupPerformanceService.instance.completePhase('window_manager');
+      } catch (e) {
+        // If window_manager fails, continue without it - app will still work
+        Log.error('Window manager initialization failed: $e', name: 'main');
+        StartupPerformanceService.instance.completePhase('window_manager');
+      }
+    });
+  }
+
+  // Initialize logging configuration
+  StartupPerformanceService.instance.startPhase('logging_config');
+  CrashReportingService.instance.logInitializationStep(
+    'Initializing logging configuration',
+  );
+  await LoggingConfigService.instance.initialize();
+
+  // Initialize log message batcher to reduce noise from repetitive native logs
+  LogMessageBatcher.instance.initialize();
+
+  StartupPerformanceService.instance.completePhase('logging_config');
+
+  // Initialize video cache manifest for instant cache lookups
+  if (!kIsWeb) {
+    // Web doesn't use file-based caching
+    StartupPerformanceService.instance.startPhase('video_cache');
+    CrashReportingService.instance.logInitializationStep(
+      'Initializing video cache manifest',
+    );
+    try {
+      await initializeMediaCache();
+      StartupPerformanceService.instance.completePhase('video_cache');
+    } catch (e) {
+      Log.error(
+        '[STARTUP] Video cache initialization failed: $e',
+        name: 'Main',
+        category: LogCategory.system,
+      );
+      StartupPerformanceService.instance.completePhase('video_cache');
+    }
+  }
+
+  // Log that core startup is complete
+  CrashReportingService.instance.logInitializationStep(
+    'Core app startup complete',
+  );
+
+  // Initialize Zendesk Support SDK (gracefully degrades if credentials not configured)
+  StartupPerformanceService.instance.startPhase('zendesk');
+  CrashReportingService.instance.logInitializationStep(
+    'Initializing Zendesk Support SDK',
+  );
+  try {
+    final zendeskInitialized = await ZendeskSupportService.initialize(
+      appId: ZendeskConfig.appId,
+      clientId: ZendeskConfig.clientId,
+      zendeskUrl: ZendeskConfig.zendeskUrl,
+    );
+    if (zendeskInitialized) {
+      Log.info(
+        '[STARTUP] Zendesk Support SDK initialized successfully',
+        name: 'Main',
+        category: LogCategory.system,
+      );
+      CrashReportingService.instance.logInitializationStep(
+        '✓ Zendesk initialized',
+      );
+    } else {
+      Log.info(
+        '[STARTUP] Zendesk Support SDK not initialized (credentials not configured)',
+        name: 'Main',
+        category: LogCategory.system,
+      );
+      CrashReportingService.instance.logInitializationStep(
+        '○ Zendesk skipped (no credentials)',
+      );
+    }
+    StartupPerformanceService.instance.completePhase('zendesk');
+  } catch (e) {
+    Log.warning(
+      '[STARTUP] Zendesk initialization failed: $e',
+      name: 'Main',
+      category: LogCategory.system,
+    );
+    CrashReportingService.instance.logInitializationStep(
+      '✗ Zendesk failed: $e',
+    );
+    StartupPerformanceService.instance.completePhase('zendesk');
+  }
+
+  // Log startup time tracking
+  final initDuration = DateTime.now().difference(startTime).inMilliseconds;
+  CrashReportingService.instance.log(
+    '[STARTUP] Initial setup took ${initDuration}ms',
+  );
+  StartupPerformanceService.instance.checkpoint('core_startup_complete');
+
+  // Set default log level based on build mode if not already configured
+  if (const String.fromEnvironment('LOG_LEVEL').isEmpty) {
+    if (kDebugMode) {
+      // Debug builds: enable debug logging for development visibility
+      // RELAY category temporarily enabled for web debugging
+      UnifiedLogger.setLogLevel(LogLevel.debug);
+      UnifiedLogger.enableCategories({
+        LogCategory.system,
+        LogCategory.auth,
+        LogCategory.video,
+        LogCategory.relay,
+        LogCategory.ui,
+      });
+    } else {
+      // Release builds: minimal logging to reduce performance impact
+      UnifiedLogger.setLogLevel(LogLevel.warning);
+      UnifiedLogger.enableCategories({LogCategory.system, LogCategory.auth});
+    }
+  }
+
+  // Store original debugPrint to avoid recursion
+  final originalDebugPrint = debugPrint;
+
+  // Override debugPrint to respect logging levels and batch repetitive messages
+  debugPrint = (message, {wrapWidth}) {
+    if (message != null && UnifiedLogger.isLevelEnabled(LogLevel.debug)) {
+      // Try to batch repetitive EXTERNAL-EVENT messages from native code
+      if (message.contains('[EXTERNAL-EVENT]') &&
+          message.contains('already exists in database or was rejected')) {
+        // Use our batcher for these specific messages
+        LogMessageBatcher.instance.tryBatchMessage(
+          message,
+          category: LogCategory.relay,
+        );
+        return; // Don't print the individual message
+      } else if (message.contains('[EXTERNAL-EVENT]') &&
+          message.contains('matches subscription')) {
+        LogMessageBatcher.instance.tryBatchMessage(
+          message,
+          level: LogLevel.debug,
+          category: LogCategory.relay,
+        );
+        return; // Don't print the individual message
+      } else if (message.contains('[EXTERNAL-EVENT]') &&
+          message.contains('Received event') &&
+          message.contains('from')) {
+        LogMessageBatcher.instance.tryBatchMessage(
+          message,
+          level: LogLevel.debug,
+          category: LogCategory.relay,
+        );
+        return; // Don't print the individual message
+      }
+
+      originalDebugPrint(message, wrapWidth: wrapWidth);
+    }
+  };
+
+  // Configure global error widget builder for user-friendly error display
+  // Wrap in Directionality to enable Text widgets even before MaterialApp is ready
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return const Directionality(
+      textDirection: TextDirection.ltr,
+      child: ColoredBox(
+        color: VineTheme.backgroundColor,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.error_outline_rounded,
+                color: VineTheme.accentOrange,
+                size: 48,
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Oops, something went wrong',
+                style: TextStyle(
+                  color: VineTheme.whiteText,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
+
+  // Handle Flutter framework errors more gracefully
+  final previousOnError = FlutterError.onError; // Preserve Crashlytics handler
+  FlutterError.onError = (details) {
+    // Log all errors for debugging
+    Log.error(
+      'Flutter Error: ${details.exception}',
+      name: 'Main',
+      category: LogCategory.system,
+    );
+
+    // Log the error but don't crash the app for known framework issues
+    if (details.exception.toString().contains('KeyDownEvent') ||
+        details.exception.toString().contains('HardwareKeyboard')) {
+      Log.warning(
+        'Known Flutter framework keyboard issue (ignoring): ${details.exception}',
+        name: 'Main',
+      );
+      return;
+    }
+
+    // Downgrade "No active player with ID" errors from FATAL to non-fatal.
+    // This is a known race condition where the native video player
+    // (AVFoundation/ExoPlayer) is disposed during tab switches or feed
+    // scrolling, but the Flutter VideoPlayer widget still tries to rebuild
+    // with the stale player ID. The primary defense is _SafeVideoPlayer
+    // in video_feed_item.dart, but this catch handles any cases that slip
+    // through (e.g. timing gaps).
+    final errorStr = details.exception.toString();
+    if (errorStr.contains('No active player with ID') ||
+        (errorStr.contains('Bad state') && errorStr.contains('player'))) {
+      Log.warning(
+        'Video player disposed race condition (non-fatal): '
+        '${details.exception}',
+        name: 'Main',
+      );
+      // Record as non-fatal in Crashlytics (if available) instead of
+      // letting it propagate as a fatal crash.
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          details.exception,
+          details.stack,
+          reason: 'Video player disposed race condition',
+        );
+      } catch (_) {}
+      // Still show the error widget (dark placeholder) but don't report
+      // as fatal.
+      FlutterError.presentError(details);
+      return;
+    }
+
+    // For other errors, forward to any existing handler (e.g., Crashlytics),
+    // then use default presentation which will now use our ErrorWidget.builder
+    try {
+      if (previousOnError != null) {
+        previousOnError(details);
+      }
+    } catch (_) {}
+    FlutterError.presentError(details);
+  };
+
+  // Initialize Hive for local data storage
+  StartupPerformanceService.instance.startPhase('hive_storage');
+  await Hive.initFlutter();
+  StartupPerformanceService.instance.completePhase('hive_storage');
+
+  // Load seed data if database is empty (first install only)
+  StartupPerformanceService.instance.startPhase('seed_data_preload');
+  AppDatabase? seedDb;
+  try {
+    seedDb = AppDatabase();
+    await SeedDataPreloadService.loadSeedDataIfNeeded(seedDb);
+  } catch (e, stack) {
+    // Non-critical: user will fetch from relay normally
+    Log.error(
+      '[SEED] Data preload failed (non-critical): $e',
+      name: 'Main',
+      category: LogCategory.system,
+    );
+    Log.verbose(
+      '[SEED] Stack: $stack',
+      name: 'Main',
+      category: LogCategory.system,
+    );
+  } finally {
+    await seedDb?.close();
+  }
+  StartupPerformanceService.instance.completePhase('seed_data_preload');
+
+  // Load seed media files if cache is empty (first install only)
+  // Skip on web - no file-based caching
+  if (!kIsWeb) {
+    StartupPerformanceService.instance.startPhase('seed_media_preload');
+    try {
+      await SeedMediaPreloadService.loadSeedMediaIfNeeded();
+    } catch (e, stack) {
+      // Non-critical: user will download videos from network normally
+      Log.error(
+        '[SEED] Media preload failed (non-critical): $e',
+        name: 'Main',
+        category: LogCategory.system,
+      );
+      Log.verbose(
+        '[SEED] Stack: $stack',
+        name: 'Main',
+        category: LogCategory.system,
+      );
+    }
+    StartupPerformanceService.instance.completePhase('seed_media_preload');
+  }
+
+  // Initialize SharedPreferences for feature flags
+  StartupPerformanceService.instance.startPhase('shared_preferences');
+  final sharedPreferences = await SharedPreferences.getInstance();
+  StartupPerformanceService.instance.completePhase('shared_preferences');
+
+  StartupPerformanceService.instance.checkpoint('pre_app_launch');
+
+  // Create ProviderContainer to initialize services BEFORE runApp
+  final container = ProviderContainer(
+    overrides: [sharedPreferencesProvider.overrideWithValue(sharedPreferences)],
+  );
+
+  // Initialize environment service FIRST (before other services that depend on relay config)
+  await container.read(environmentServiceProvider).initialize();
+  Log.info(
+    '[INIT] EnvironmentService initialized: ${container.read(currentEnvironmentProvider).displayName}',
+    name: 'Main',
+    category: LogCategory.system,
+  );
+
+  // Initialize critical services at app startup level (not UI level)
+  StartupPerformanceService.instance.startPhase('core_services');
+  await _initializeCoreServices(container);
+  StartupPerformanceService.instance.completePhase('core_services');
+
+  Log.info('divine starting...', name: 'Main');
+  Log.info('Log level: ${UnifiedLogger.currentLevel.name}', name: 'Main');
+  // Configure audio session for media playback
+  // This ensures audio plays even when iOS mute switch is on
+  final session = await AudioSession.instance;
+  await session.configure(
+    const AudioSessionConfiguration(
+      avAudioSessionCategory: AVAudioSessionCategory.playback,
+      avAudioSessionMode: AVAudioSessionMode.moviePlayback,
+      androidAudioAttributes: AndroidAudioAttributes(
+        contentType: AndroidAudioContentType.movie,
+        usage: AndroidAudioUsage.media,
+      ),
+    ),
+  );
+
+  // Initialize MediaKit for pooled_video_player (uses media_kit internally)
+  MediaKit.ensureInitialized();
+
+  // Initialize the player pool singleton
+  await PlayerPool.init();
+
+  runApp(
+    UncontrolledProviderScope(container: container, child: const DivineApp()),
+  );
+}
+
+/// Initialize critical services before the UI renders.
+/// This ensures services are ready when widgets first build.
+Future<void> _initializeCoreServices(ProviderContainer container) async {
+  Log.info(
+    '[INIT] Starting service initialization...',
+    name: 'Main',
+    category: LogCategory.system,
+  );
+
+  // Initialize key manager first (needed for NIP-17 bug reports and auth)
+  await container.read(nostrKeyManagerProvider).initialize();
+  Log.info(
+    '[INIT] ✅ NostrKeyManager initialized',
+    name: 'Main',
+    category: LogCategory.system,
+  );
+
+  // Initialize auth service
+  // NOTE: NostrService (relay connections) is initialized lazily in AuthService
+  // when user actually authenticates, to avoid blocking startup for unauthenticated users
+  await container.read(authServiceProvider).initialize();
+  Log.info(
+    '[INIT] ✅ AuthService initialized',
+    name: 'Main',
+    category: LogCategory.system,
+  );
+
+  // Initialize independent services in parallel
+  await Future.wait([
+    container.read(seenVideosServiceProvider).initialize(),
+    bandwidthTracker.initialize(),
+    container.read(uploadManagerProvider).initialize(),
+  ]);
+
+  Log.info(
+    '[INIT] ✅ All critical services initialized',
+    name: 'Main',
+    category: LogCategory.system,
+  );
+}
+
+void main() {
+  // Capture any uncaught Dart errors (foreground or background zones)
+  runZonedGuarded(
+    () async {
+      await _startOpenVineApp();
+    },
+    (error, stack) async {
+      // Best-effort logging; if Crashlytics isn't ready, still print
+      try {
+        await CrashReportingService.instance.recordError(
+          error,
+          stack,
+          reason: 'runZonedGuarded',
+        );
+      } catch (_) {}
+    },
+  );
+}
+
+class DivineApp extends ConsumerStatefulWidget {
+  const DivineApp({super.key});
+
+  @override
+  ConsumerState<DivineApp> createState() => _DivineAppState();
+}
+
+class _DivineAppState extends ConsumerState<DivineApp> {
+  bool _backgroundInitDone = false;
+  StreamSubscription<void>? _shakeSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize non-critical background services after first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_backgroundInitDone) {
+        _backgroundInitDone = true;
+        _initializeDeepLinkServices();
+        _initializeBackgroundServices();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _shakeSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _initializeDeepLinkServices() {
+    Log.info(
+      '🔗 Initializing deep link services...',
+      name: 'DeepLinkHandler',
+      category: LogCategory.ui,
+    );
+
+    // Initialize the deep link service for video content
+    ref.read(deepLinkServiceProvider).initialize();
+
+    // Initialize the deep link service for password reset
+    ref.read(passwordResetListenerProvider).initialize();
+
+    // Initialize the deep link service for email verification
+    ref.read(emailVerificationListenerProvider).initialize();
+
+    Log.info(
+      '✅ Deep Link services initialized',
+      name: 'DeepLinkHandler',
+      category: LogCategory.ui,
+    );
+  }
+
+  /// Initialize non-critical background services.
+  /// Critical services are already initialized before runApp in _initializeCoreServices.
+  void _initializeBackgroundServices() {
+    // Initialize mutual mute list sync in background
+    Future.microtask(() async {
+      try {
+        final keyManager = ref.read(nostrKeyManagerProvider);
+        final nostrService = ref.read(nostrServiceProvider);
+        final blocklistService = ref.read(contentBlocklistServiceProvider);
+
+        // Only sync if user is logged in
+        if (keyManager.publicKey != null) {
+          await blocklistService.syncMuteListsInBackground(
+            nostrService,
+            keyManager.publicKey!,
+          );
+          Log.info(
+            '[INIT] ✅ Mutual mute list sync started (background)',
+            name: 'Main',
+            category: LogCategory.system,
+          );
+        }
+      } catch (e) {
+        Log.warning(
+          '[INIT] Mutual mute sync failed (non-critical): $e',
+          name: 'Main',
+          category: LogCategory.system,
+        );
+      }
+    });
+
+    // Run draft-to-clip migration in background (one-time operation)
+    Future.microtask(() async {
+      try {
+        final prefs = ref.read(sharedPreferencesProvider);
+        final draftService = await ref.read(draftStorageServiceProvider.future);
+        final clipService = ref.read(clipLibraryServiceProvider);
+
+        final migrationService = DraftMigrationService(
+          draftService: draftService,
+          clipService: clipService,
+          prefs: prefs,
+        );
+
+        final result = await migrationService.migrate();
+
+        if (result.alreadyMigrated) {
+          Log.info(
+            '[INIT] ○ Draft migration already completed',
+            name: 'Main',
+            category: LogCategory.system,
+          );
+        } else {
+          Log.info(
+            '[INIT] ✅ Draft migration complete: ${result.migratedCount} migrated, ${result.skippedCount} skipped',
+            name: 'Main',
+            category: LogCategory.system,
+          );
+        }
+      } catch (e) {
+        Log.warning(
+          '[INIT] Draft migration failed (non-critical): $e',
+          name: 'Main',
+          category: LogCategory.system,
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Activate route normalization at app root
+    ref.watch(routeNormalizationProvider);
+
+    // Set up deep link listener (must be in build method per Riverpod rules)
+    ref.listen<AsyncValue<DeepLink>>(deepLinksProvider, (previous, next) {
+      Log.info(
+        '🔗 Deep link event received - AsyncValue state: ${next.runtimeType}',
+        name: 'DeepLinkHandler',
+        category: LogCategory.ui,
+      );
+
+      next.when(
+        data: (deepLink) {
+          Log.info(
+            '🔗 Processing deep link: $deepLink',
+            name: 'DeepLinkHandler',
+            category: LogCategory.ui,
+          );
+
+          final router = ref.read(goRouterProvider);
+          final currentLocation = router.routeInformationProvider.value.uri
+              .toString();
+          Log.info(
+            '🔗 Current router location: $currentLocation',
+            name: 'DeepLinkHandler',
+            category: LogCategory.ui,
+          );
+
+          switch (deepLink.type) {
+            case DeepLinkType.video:
+              if (deepLink.videoId != null) {
+                final targetPath = VideoDetailScreen.pathForId(
+                  deepLink.videoId!,
+                );
+                Log.info(
+                  '📱 Navigating to video: $targetPath',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+                try {
+                  // Skip if already showing this video (getInitialLink
+                  // and uriLinkStream can both fire for the same URL).
+                  if (currentLocation == targetPath) break;
+                  // Push (not go) so the home route stays underneath,
+                  // allowing back navigation to return to the main screen.
+                  router.push(targetPath);
+                  Log.info(
+                    '✅ Navigation completed to: $targetPath',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                } catch (e) {
+                  Log.error(
+                    '❌ Navigation failed: $e',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                }
+              } else {
+                Log.warning(
+                  '⚠️ Video deep link missing videoId',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+              }
+            case DeepLinkType.profile:
+              if (deepLink.npub != null) {
+                final index = deepLink.index ?? 0;
+                final targetPath =
+                    '${ProfileScreenRouter.pathForNpub(deepLink.npub!)}/$index';
+                Log.info(
+                  '📱 Navigating to profile: $targetPath',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+                try {
+                  router.go(targetPath);
+                  Log.info(
+                    '✅ Navigation completed to: $targetPath',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                } catch (e) {
+                  Log.error(
+                    '❌ Navigation failed: $e',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                }
+              } else {
+                Log.warning(
+                  '⚠️ Profile deep link missing npub',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+              }
+            case DeepLinkType.hashtag:
+              if (deepLink.hashtag != null) {
+                // Include index if present, otherwise use grid view
+                final targetPath = HashtagScreenRouter.pathForTag(
+                  deepLink.hashtag!,
+                  index: deepLink.index,
+                );
+                Log.info(
+                  '📱 Navigating to hashtag: $targetPath',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+                try {
+                  router.go(targetPath);
+                  Log.info(
+                    '✅ Navigation completed to: $targetPath',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                } catch (e) {
+                  Log.error(
+                    '❌ Navigation failed: $e',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                }
+              } else {
+                Log.warning(
+                  '⚠️ Hashtag deep link missing hashtag',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+              }
+            case DeepLinkType.search:
+              if (deepLink.searchTerm != null) {
+                // Include index if present, otherwise use grid view
+                final targetPath = SearchScreenPure.pathForTerm(
+                  term: deepLink.searchTerm,
+                  index: deepLink.index,
+                );
+                Log.info(
+                  '📱 Navigating to search: $targetPath',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+                try {
+                  router.go(targetPath);
+                  Log.info(
+                    '✅ Navigation completed to: $targetPath',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                } catch (e) {
+                  Log.error(
+                    '❌ Navigation failed: $e',
+                    name: 'DeepLinkHandler',
+                    category: LogCategory.ui,
+                  );
+                }
+              } else {
+                Log.warning(
+                  '⚠️ Search deep link missing search term',
+                  name: 'DeepLinkHandler',
+                  category: LogCategory.ui,
+                );
+              }
+            case DeepLinkType.signerCallback:
+              Log.info(
+                '📱 Signer callback - triggering relay reconnection',
+                name: 'DeepLinkHandler',
+                category: LogCategory.auth,
+              );
+              ref.read(authServiceProvider).onSignerCallbackReceived();
+            case DeepLinkType.unknown:
+              Log.warning(
+                '📱 Unknown deep link type',
+                name: 'DeepLinkHandler',
+                category: LogCategory.ui,
+              );
+          }
+        },
+        loading: () {
+          Log.info(
+            '🔗 Deep link loading...',
+            name: 'DeepLinkHandler',
+            category: LogCategory.ui,
+          );
+        },
+        error: (error, stack) {
+          Log.error(
+            '🔗 Deep link error: $error',
+            name: 'DeepLinkHandler',
+            category: LogCategory.ui,
+          );
+        },
+      );
+    });
+
+    const bool crashProbe = bool.fromEnvironment(
+      'CRASHLYTICS_PROBE',
+    );
+
+    final router = ref.read(goRouterProvider);
+
+    // Initialize back button handler (Android only - uses platform channel)
+    if (!kIsWeb && io.Platform.isAndroid) {
+      BackButtonHandler.initialize(router, ref);
+    }
+
+    // Helper functions for tab navigation
+    RouteType routeTypeForTab(int index) {
+      switch (index) {
+        case 0:
+          return RouteType.home;
+        case 1:
+          return RouteType.explore;
+        case 2:
+          return RouteType.notifications;
+        case 3:
+          return RouteType.profile;
+        default:
+          return RouteType.home;
+      }
+    }
+
+    int? tabIndexFromRouteType(RouteType type) {
+      switch (type) {
+        case RouteType.home:
+          return 0;
+        case RouteType.explore:
+        case RouteType.hashtag: // Hashtag is part of explore tab
+          return 1;
+        case RouteType.notifications:
+          return 2;
+        case RouteType.profile:
+          return 3;
+        default:
+          return null; // Not a main tab route
+      }
+    }
+
+    // Helper function to handle back navigation (iOS/macOS/Windows use PopScope)
+    Future<bool> handleBackNavigation(GoRouter router, WidgetRef ref) async {
+      // Get current route context
+      final ctxAsync = ref.read(pageContextProvider);
+      final ctx = ctxAsync.value;
+      if (ctx == null) {
+        return false; // Not handled - let PopScope handle it
+      }
+
+      // First, check if we're in a sub-route (hashtag, search, etc.)
+      // If so, navigate back to parent route
+      switch (ctx.type) {
+        case RouteType.hashtag:
+        case RouteType.search:
+          // Go back to explore
+          router.go(ExploreScreen.path);
+          return true; // Handled
+        case RouteType.videoRecorder:
+        case RouteType.videoClipEditor:
+        case RouteType.videoEditor:
+        case RouteType.videoMetadata:
+          // Pop the video editing flow screens
+          router.pop();
+          return true; // Handled
+        default:
+          break;
+      }
+
+      // For routes with videoIndex (feed mode), go to grid mode first
+      // This handles page-internal navigation before tab switching
+      // For explore: go to grid mode (null index)
+      // For notifications: go to index 0 (notifications always has an index)
+      // For other routes: go to grid mode (null index)
+      if (ctx.videoIndex != null && ctx.videoIndex != 0) {
+        final newRoute = switch (ctx.type) {
+          // Notifications always has an index, go to index 0
+          RouteType.notifications => NotificationsScreen.pathForIndex(0),
+          RouteType.explore => ExploreScreen.path,
+          RouteType.profile => ProfileScreenRouter.pathForNpub(
+            ctx.npub ?? 'me',
+          ),
+          RouteType.hashtag => HashtagScreenRouter.pathForTag(
+            ctx.hashtag ?? '',
+          ),
+          RouteType.search => SearchScreenPure.path,
+          RouteType.home => VideoFeedPage.pathForIndex(0),
+          _ => ExploreScreen.path,
+        };
+
+        router.go(newRoute);
+        return true; // Handled
+      }
+
+      // Check tab history for navigation
+      final tabHistory = ref.read(tabHistoryProvider.notifier);
+      final previousTab = tabHistory.getPreviousTab();
+
+      // If there's a previous tab in history, navigate to it
+      if (previousTab != null) {
+        // Navigate to previous tab
+        final previousRouteType = routeTypeForTab(previousTab);
+        final lastIndex = ref
+            .read(lastTabPositionProvider.notifier)
+            .getPosition(previousRouteType);
+
+        // Remove current tab from history before navigating
+        tabHistory.navigateBack();
+
+        // Navigate to previous tab using BuildContext extension methods
+        // We need a BuildContext for this, but we don't have one here
+        // So we'll use router.go directly
+        switch (previousTab) {
+          case 0:
+            router.go(VideoFeedPage.pathForIndex(lastIndex ?? 0));
+          case 1:
+            if (lastIndex != null) {
+              router.go(ExploreScreen.pathForIndex(lastIndex));
+            } else {
+              router.go(ExploreScreen.path);
+            }
+          case 2:
+            router.go(NotificationsScreen.pathForIndex(lastIndex ?? 0));
+          case 3:
+            // Get current user's npub for profile
+            final authService = ref.read(authServiceProvider);
+            final currentNpub = authService.currentNpub;
+            if (currentNpub != null) {
+              router.go(ProfileScreenRouter.pathForNpub(currentNpub));
+            } else {
+              router.go(VideoFeedPage.pathForIndex(0));
+            }
+        }
+        return true; // Handled
+      }
+
+      // No previous tab - check if we're on a non-home tab
+      // If so, go to home first before exiting
+      final currentTab = tabIndexFromRouteType(ctx.type);
+      if (currentTab != null && currentTab != 0) {
+        // Go to home first
+        router.go(VideoFeedPage.pathForIndex(0));
+        return true; // Handled
+      }
+
+      // Already at home with no history - let PopScope handle exit
+      return false; // Not handled - let PopScope handle it (may exit app)
+    }
+
+    // On iOS/macOS/Windows, use PopScope. On Android, platform channel handles it
+    final app = (!kIsWeb && io.Platform.isAndroid)
+        ? MaterialApp.router(
+            title: 'divine',
+            debugShowCheckedModeBanner: false,
+            theme: VineTheme.theme,
+            routerConfig: router,
+          )
+        : PopScope(
+            canPop: false,
+            onPopInvokedWithResult: (didPop, result) async {
+              if (didPop) return;
+              await handleBackNavigation(router, ref);
+            },
+            child: MaterialApp.router(
+              title: 'divine',
+              debugShowCheckedModeBanner: false,
+              theme: VineTheme.theme,
+              routerConfig: router,
+            ),
+          );
+
+    /// Creates the publish service with callbacks wired to this notifier.
+    Future<VideoPublishService> createPublishService({
+      required OnProgressChanged onProgress,
+    }) async {
+      return VideoPublishService(
+        uploadManager: ref.read(uploadManagerProvider),
+        authService: ref.read(authServiceProvider),
+        videoEventPublisher: ref.read(videoEventPublisherProvider),
+        blossomService: ref.read(blossomUploadServiceProvider),
+        draftService: DraftStorageService(),
+        onProgressChanged:
+            ({required String draftId, required double progress}) {
+              onProgress(draftId: draftId, progress: progress);
+            },
+      );
+    }
+
+    // Wrap with geo-blocking check first, then lifecycle handler
+    Widget wrapped = MultiBlocProvider(
+      providers: [
+        BlocProvider(
+          create: (_) => BackgroundPublishBloc(
+            videoPublishServiceFactory: createPublishService,
+          ),
+        ),
+        BlocProvider(
+          create: (_) => CameraPermissionBloc(
+            permissionsService: const PermissionHandlerPermissionsService(),
+          )..add(const CameraPermissionRefresh()),
+        ),
+        BlocProvider(
+          create: (_) => EmailVerificationCubit(
+            oauthClient: ref.read(oauthClientProvider),
+            authService: ref.read(authServiceProvider),
+          ),
+        ),
+      ],
+      // Global listener for email verification failures - shows snackbar
+      // when verification times out or fails while user is elsewhere in app
+      child: BlocListener<EmailVerificationCubit, EmailVerificationState>(
+        listenWhen: (previous, current) =>
+            current.status == EmailVerificationStatus.failure &&
+            previous.status != EmailVerificationStatus.failure,
+        listener: (context, state) {
+          final messenger = ScaffoldMessenger.maybeOf(context);
+          if (messenger != null && state.error != null) {
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text(state.error!),
+                backgroundColor: Colors.red[700],
+                behavior: SnackBarBehavior.floating,
+                duration: const Duration(seconds: 5),
+              ),
+            );
+          }
+        },
+        child: GeoBlockingGate(child: AppLifecycleHandler(child: app)),
+      ),
+    );
+
+    if (crashProbe) {
+      // Invisible crash probe: tap top-left corner 7 times within 5s to crash
+      wrapped = Stack(
+        children: [
+          wrapped,
+          Positioned(
+            left: 0,
+            top: 0,
+            width: 44,
+            height: 44,
+            child: _CrashProbeHotspot(),
+          ),
+        ],
+      );
+    }
+
+    return wrapped; // ProviderScope now wraps DivineApp from outside
+  }
+}
+
+class _CrashProbeHotspot extends StatefulWidget {
+  @override
+  State<_CrashProbeHotspot> createState() => _CrashProbeHotspotState();
+}
+
+class _CrashProbeHotspotState extends State<_CrashProbeHotspot> {
+  int _taps = 0;
+  DateTime? _windowStart;
+
+  Future<void> _onTap() async {
+    final now = DateTime.now();
+    if (_windowStart == null ||
+        now.difference(_windowStart!) > const Duration(seconds: 5)) {
+      _windowStart = now;
+      _taps = 0;
+    }
+    _taps++;
+    if (_taps >= 7) {
+      // Record a breadcrumb, then crash the app (TestFlight validation)
+      try {
+        FirebaseCrashlytics.instance.log('CrashProbe: triggering test crash');
+      } catch (_) {}
+      // Force a native crash to ensure reporting in TF
+      FirebaseCrashlytics.instance.crash();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.translucent,
+    onTap: _onTap,
+    child: const SizedBox.expand(),
+  );
+}
+
+/// Window size constants for desktop experience
+class WindowSizeConstants {
+  WindowSizeConstants._();
+
+  // Base dimensions for desktop vine experience (1x scale)
+  static const double baseWidth = 450;
+  static const double baseHeight = 700;
+}

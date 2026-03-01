@@ -1,0 +1,35 @@
+appId: co.openvine.app
+---
+- assertVisible: My Profile
+- assertVisible: More
+- assertVisible: Videos
+- assertVisible:
+    text: "^.*\\sFollowers$"
+- assertVisible:
+    text: "^.*\\sFollowing$"
+- assertVisible:
+    text: "^npub.*"
+
+- assertVisible: Edit
+- assertVisible: Refresh
+- assertVisible: Library
+
+- assertVisible: |-
+    Tab 1 of 4
+    videos_tab
+- assertVisible: |-
+    Tab 2 of 4
+    liked_tab
+- assertVisible: |-
+    Tab 3 of 4
+    reposted_tab
+- assertVisible: |-
+    Tab 4 of 4
+    collabs_tab
+
+- assertNotVisible:
+    text: Loading...
+    optional: true
+- assertNotVisible:
+    text: Unknown
+    optional: true

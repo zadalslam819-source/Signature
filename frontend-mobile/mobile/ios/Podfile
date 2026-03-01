@@ -1,0 +1,176 @@
+# Define the global iOS platform for this project
+platform :ios, '16.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+# Use CDN source for CocoaPods specs
+source 'https://cdn.cocoapods.org/'
+
+# Suppress master specs repo warning
+install! 'cocoapods', :warn_for_unused_master_specs_repo => false
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks! :linkage => :static
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+
+  # Explicitly include pods that have given us trouble
+  pod 'libwebp', '~> 1.5.0'
+
+  # ProofMode library for cryptographic proof generation
+  # Using local fork with Swift 5.x compatibility fixes
+  pod 'LibProofMode', :path => 'LocalPods/LibProofMode'
+
+  # Zendesk Support SDK
+  pod 'ZendeskSupportSDK', '~> 9.0'
+
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+      # Explicitly disable bitcode for all pods
+      config.build_settings['ENABLE_BITCODE'] = 'NO'
+
+      # flutter-permission-handler permissions
+      # https://github.com/Baseflow/flutter-permission-handler/blob/main/permission_handler_apple/ios/Classes/PermissionHandlerEnums.h
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+        '$(inherited)',
+
+        ## dart: PermissionGroup.camera
+        'PERMISSION_CAMERA=1',
+
+        ## dart: PermissionGroup.microphone
+        'PERMISSION_MICROPHONE=1',
+
+        ## dart: PermissionGroup.photos
+        'PERMISSION_PHOTOS=1',
+
+        ## dart: PermissionGroup.photosAddOnly
+        'PERMISSION_PHOTOS_ADD_ONLY=1',
+      ]
+
+      # Remove duplicate preprocessor definitions
+      if config.build_settings['GCC_PREPROCESSOR_DEFINITIONS']
+        defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS']
+        if defs.is_a?(Array)
+          # Keep inherited and remove duplicates
+          cleaned_defs = ['$(inherited)']
+          seen = {}
+
+          defs.each do |definition|
+            next if definition == '$(inherited)'
+
+            # Extract the key part (before '=')
+            key = definition.split('=').first
+
+            # Only keep first occurrence of each key
+            unless seen[key]
+              seen[key] = true
+              cleaned_defs << definition
+            end
+          end
+
+          config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = cleaned_defs
+        elsif defs.is_a?(String)
+          # Split string into array, deduplicate, and rejoin
+          parts = defs.split(/\s+/)
+          cleaned_parts = ['$(inherited)']
+          seen = {}
+
+          parts.each do |part|
+            next if part.empty? || part == '$(inherited)'
+
+            key = part.split('=').first
+            unless seen[key]
+              seen[key] = true
+              cleaned_parts << part
+            end
+          end
+
+          config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] = cleaned_parts.join(' ')
+        end
+      end
+    end
+
+    # Fix framework bundle structure for App Store validation
+    target.build_configurations.each do |config|
+      if target.name.end_with?('-iOS')
+        config.build_settings['DEFINES_MODULE'] = 'YES'
+        config.build_settings['SWIFT_VERSION'] = '5.0'
+      end
+    end
+  end
+
+  # Ensure proper framework configuration
+  installer.pods_project.targets.each do |target|
+    if target.respond_to?(:product_type) and target.product_type == "com.apple.product-type.framework"
+      target.build_configurations.each do |config|
+        config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+      end
+    end
+  end
+
+  # Fix duplicate $(inherited) in generated xcconfig files
+  # This prevents POD_CONFIGURATION_DEBUG redefinition warnings
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      xcconfig_path = config.base_configuration_reference&.real_path
+      next unless xcconfig_path && File.exist?(xcconfig_path)
+
+      xcconfig_content = File.read(xcconfig_path)
+      modified = false
+
+      # Fix GCC_PREPROCESSOR_DEFINITIONS with duplicate $(inherited) and empty strings
+      if xcconfig_content =~ /^GCC_PREPROCESSOR_DEFINITIONS = (.*)$/
+        original_line = $1
+        # Remove all $(inherited) and add back a single one at the start
+        cleaned_line = original_line.gsub(/\$\(inherited\)\s*/, '').strip
+        # Remove empty strings (both "" and empty entries)
+        cleaned_line = cleaned_line.gsub(/\s*""\s*/, ' ').gsub(/\s+/, ' ').strip
+        cleaned_line = "$(inherited) #{cleaned_line}".strip
+
+        new_content = xcconfig_content.sub(
+          /^GCC_PREPROCESSOR_DEFINITIONS = .*$/,
+          "GCC_PREPROCESSOR_DEFINITIONS = #{cleaned_line}"
+        )
+
+        if new_content != xcconfig_content
+          File.write(xcconfig_path, new_content)
+          modified = true
+        end
+      end
+
+    end
+  end
+end

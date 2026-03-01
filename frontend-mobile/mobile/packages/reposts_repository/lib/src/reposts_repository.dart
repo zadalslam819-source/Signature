@@ -1,0 +1,855 @@
+// ABOUTME: Repository for managing user reposts (Kind 16 generic reposts).
+// ABOUTME: Coordinates between NostrClient for relay operations and
+// ABOUTME: RepostsLocalStorage for persistence. Handles Kind 16 reposts
+// ABOUTME: and Kind 5 deletions for repost/unrepost.
+// ABOUTME: Supports offline queuing via callback injection.
+
+import 'dart:async';
+import 'dart:math';
+
+import 'package:nostr_client/nostr_client.dart';
+import 'package:nostr_sdk/nostr_sdk.dart';
+import 'package:reposts_repository/src/exceptions.dart';
+import 'package:reposts_repository/src/models/repost_record.dart';
+import 'package:reposts_repository/src/models/reposts_sync_result.dart';
+import 'package:reposts_repository/src/reposts_local_storage.dart';
+import 'package:rxdart/rxdart.dart';
+
+/// Default limit for fetching user reposts from relays.
+const _defaultRepostFetchLimit = 500;
+
+/// Callback to check if the device is currently online
+typedef IsOnlineCallback = bool Function();
+
+/// Callback to queue an action for offline sync
+typedef QueueOfflineRepostCallback =
+    Future<void> Function({
+      required bool isRepost,
+      required String addressableId,
+      required String originalAuthorPubkey,
+      String? eventId,
+    });
+
+/// Repository for managing user reposts (Kind 16 generic reposts) on videos.
+///
+/// This repository provides a unified interface for:
+/// - Reposting videos (publishing Kind 16 generic repost events)
+/// - Unreposting videos (publishing Kind 5 deletion events)
+/// - Querying repost status
+/// - Syncing user's reposts from relays
+/// - Persisting repost records locally
+///
+/// The repository abstracts away the complexity of:
+/// - Managing the mapping between addressable IDs and repost event IDs
+/// - Coordinating between Nostr relays and local storage
+/// - Handling optimistic updates and error recovery
+///
+/// This implementation:
+/// - Uses `NostrClient` to publish reposts and deletions to relays
+/// - Uses `RepostsLocalStorage` to persist repost records locally
+/// - Maintains an in-memory cache for fast lookups
+/// - Provides reactive streams for UI updates
+/// - Supports real-time cross-device sync via persistent subscriptions
+class RepostsRepository {
+  /// Creates a new reposts repository.
+  ///
+  /// Parameters:
+  /// - [nostrClient]: Client for Nostr relay communication
+  /// - [localStorage]: Optional local storage for persistence
+  /// - [isOnline]: Optional callback to check connectivity status
+  /// - [queueOfflineAction]: Optional callback to queue actions when offline
+  RepostsRepository({
+    required NostrClient nostrClient,
+    RepostsLocalStorage? localStorage,
+    IsOnlineCallback? isOnline,
+    QueueOfflineRepostCallback? queueOfflineAction,
+  }) : _nostrClient = nostrClient,
+       _localStorage = localStorage,
+       _isOnline = isOnline,
+       _queueOfflineAction = queueOfflineAction;
+
+  final NostrClient _nostrClient;
+  final RepostsLocalStorage? _localStorage;
+
+  /// Callback to check if the device is online
+  final IsOnlineCallback? _isOnline;
+
+  /// Callback to queue actions for offline sync
+  final QueueOfflineRepostCallback? _queueOfflineAction;
+
+  /// In-memory cache of repost records keyed by addressable ID.
+  final Map<String, RepostRecord> _repostRecords = {};
+
+  /// Local count cache keyed by addressable ID.
+  ///
+  /// Stores the last known-correct repost count after toggle operations.
+  /// This survives BLoC disposal (since the repository is a singleton) and
+  /// prevents stale NIP-45 COUNT from relays that haven't processed Kind 5
+  /// deletions yet.
+  final Map<String, int> _localCountCache = {};
+
+  /// Reactive stream controller for reposted addressable IDs.
+  final _repostedIdsController = BehaviorSubject<Set<String>>.seeded({});
+
+  /// Whether the repository has been initialized with data from storage.
+  bool _isInitialized = false;
+
+  /// Whether [dispose] has been called.
+  ///
+  /// Once disposed, all stream emissions are no-ops.
+  bool _isDisposed = false;
+
+  /// Real-time sync subscription for cross-device synchronization.
+  StreamSubscription<Event>? _repostSubscription;
+  String? _repostSubscriptionId;
+
+  /// Emits the current set of reposted addressable IDs.
+  ///
+  /// Guards against emitting after [dispose] has been called or the controller
+  /// has been closed, which can happen if [clearCache] runs during or after
+  /// [dispose] (e.g. on logout).
+  void _emitRepostedIds() {
+    if (_isDisposed || _repostedIdsController.isClosed) return;
+    _repostedIdsController.add(_repostRecords.keys.toSet());
+  }
+
+  /// Stream of reposted addressable IDs (reactive).
+  ///
+  /// Emits a new set whenever the user's reposts change.
+  /// This is useful for UI components that need to reactively update.
+  Stream<Set<String>> watchRepostedAddressableIds() {
+    // If we have local storage, delegate to its reactive stream
+    if (_localStorage != null) {
+      return _localStorage.watchRepostedAddressableIds();
+    }
+    return _repostedIdsController.stream;
+  }
+
+  /// Get the current set of reposted addressable IDs.
+  ///
+  /// This is a one-shot query that returns the current state.
+  Future<Set<String>> getRepostedAddressableIds() async {
+    await _ensureInitialized();
+    return _repostRecords.keys.toSet();
+  }
+
+  /// Get reposted addressable IDs ordered by recency (most recent first).
+  ///
+  /// Returns a list of addressable IDs sorted by the `createdAt` timestamp
+  /// of the repost, with the most recent reposts first.
+  Future<List<String>> getOrderedRepostedAddressableIds() async {
+    await _ensureInitialized();
+
+    // Sort records by createdAt descending (most recent first)
+    final sortedRecords = _repostRecords.values.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    return sortedRecords.map((r) => r.addressableId).toList();
+  }
+
+  /// Check if a specific video is reposted.
+  ///
+  /// Returns `true` if the user has reposted the video, `false` otherwise.
+  Future<bool> isReposted(String addressableId) async {
+    await _ensureInitialized();
+    return _repostRecords.containsKey(addressableId);
+  }
+
+  /// Check if a video is reposted (synchronous, from cache only).
+  ///
+  /// This is useful for UI components that need immediate feedback.
+  /// Note: May return stale data if cache hasn't been initialized.
+  bool isRepostedSync(String addressableId) {
+    return _repostRecords.containsKey(addressableId);
+  }
+
+  /// Cache a locally-adjusted repost count for a video.
+  ///
+  /// Called internally after a successful toggle to preserve the correct count
+  /// across BLoC recreations (e.g. when scrolling away and back in the feed).
+  /// This prevents stale NIP-45 COUNT from relays that haven't processed
+  /// Kind 5 deletions yet.
+  void _cacheRepostCount(String addressableId, int count) {
+    _localCountCache[addressableId] = max(0, count);
+  }
+
+  /// Get the repost count for a video by its addressable ID.
+  ///
+  /// Returns a locally-cached count if available (set by recent toggle
+  /// operations), otherwise queries relays via NIP-45 COUNT.
+  ///
+  /// Note: This counts all reposts from all users, not just the current user's.
+  Future<int> getRepostCount(String addressableId) async {
+    // Use local cache if available (set by recent toggle operations).
+    // This prevents stale relay counts after unrepost, since relays may not
+    // immediately decrement NIP-45 COUNT for Kind 5 deletions.
+    if (_localCountCache.containsKey(addressableId)) {
+      return _localCountCache[addressableId]!;
+    }
+
+    // Query relays for count of Kind 16 reposts referencing this addressable ID
+    final filter = Filter(
+      kinds: const [EventKind.genericRepost],
+      a: [addressableId],
+    );
+
+    final result = await _nostrClient.countEvents([filter]);
+    return result.count;
+  }
+
+  /// Get the repost count for a video by its event ID.
+  ///
+  /// Queries relays for the count of Kind 6 (repost) and Kind 16 (generic
+  /// repost) events referencing the video by its event ID (using the `e` tag).
+  ///
+  /// Use this method for non-addressable videos (videos without a d-tag).
+  ///
+  /// Note: This counts all reposts from all users, not just the current user's.
+  Future<int> getRepostCountByEventId(String eventId) async {
+    // Query relays for count of Kind 6 and Kind 16 reposts referencing this
+    // event ID
+    final filter = Filter(
+      kinds: const [EventKind.repost, EventKind.genericRepost],
+      e: [eventId],
+    );
+
+    final result = await _nostrClient.countEvents([filter]);
+    return result.count;
+  }
+
+  /// Repost a video.
+  ///
+  /// Creates and publishes a Kind 16 generic repost event.
+  /// The repost event is broadcast to Nostr relays and the mapping
+  /// is stored locally for later retrieval.
+  ///
+  /// If the device is offline and offline queuing is enabled, the action
+  /// is queued for later sync and the UI should be updated optimistically.
+  ///
+  /// Parameters:
+  /// - [addressableId]: The addressable ID of the video (kind:pubkey:d-tag)
+  /// - [originalAuthorPubkey]: The pubkey of the video's author
+  /// - [eventId]: Optional event ID for better relay compatibility. Including
+  ///   this allows relays to index the repost by `#e` tag, which is more
+  ///   universally supported than `#a` tag.
+  ///
+  /// Returns the repost event ID (needed for unreposts), or a placeholder
+  /// ID if the action was queued for offline sync.
+  ///
+  /// Throws `RepostFailedException` if the operation fails.
+  /// Throws `AlreadyRepostedException` if the video is already reposted.
+  /// Throws `MissingDTagException` if the video is missing a d-tag.
+  Future<String> repostVideo({
+    required String addressableId,
+    required String originalAuthorPubkey,
+    String? eventId,
+  }) async {
+    await _ensureInitialized();
+
+    // Check if already reposted
+    if (_repostRecords.containsKey(addressableId)) {
+      throw AlreadyRepostedException(addressableId);
+    }
+
+    // Check if offline and queue if needed
+    if (_isOnline != null && !_isOnline() && _queueOfflineAction != null) {
+      await _queueOfflineAction(
+        isRepost: true,
+        addressableId: addressableId,
+        originalAuthorPubkey: originalAuthorPubkey,
+        eventId: eventId,
+      );
+
+      // Create optimistic local record with placeholder ID
+      final placeholderId = 'pending_repost_$addressableId';
+      final record = RepostRecord(
+        addressableId: addressableId,
+        repostEventId: placeholderId,
+        originalAuthorPubkey: originalAuthorPubkey,
+        createdAt: DateTime.now(),
+      );
+
+      _repostRecords[addressableId] = record;
+      await _localStorage?.saveRepostRecord(record);
+      _emitRepostedIds();
+
+      return placeholderId;
+    }
+
+    // Create and publish Kind 16 generic repost event
+    final sentEvent = await _nostrClient.sendGenericRepost(
+      addressableId: addressableId,
+      targetKind: EventKind.videoVertical,
+      authorPubkey: originalAuthorPubkey,
+      eventId: eventId,
+    );
+
+    if (sentEvent == null) {
+      throw const RepostFailedException('Failed to publish repost to relays');
+    }
+
+    // Create and store the repost record
+    final record = RepostRecord(
+      addressableId: addressableId,
+      repostEventId: sentEvent.id,
+      originalAuthorPubkey: originalAuthorPubkey,
+      createdAt: DateTime.now(),
+    );
+
+    _repostRecords[addressableId] = record;
+    await _localStorage?.saveRepostRecord(record);
+    _emitRepostedIds();
+
+    return sentEvent.id;
+  }
+
+  /// Execute a repost action directly (for use by sync service).
+  ///
+  /// This method bypasses offline queuing and directly publishes to relays.
+  /// Used by PendingActionService to execute queued actions.
+  Future<String> executeRepostAction({
+    required String addressableId,
+    required String originalAuthorPubkey,
+    String? eventId,
+  }) async {
+    // Create and publish Kind 16 generic repost event
+    final sentEvent = await _nostrClient.sendGenericRepost(
+      addressableId: addressableId,
+      targetKind: EventKind.videoVertical,
+      authorPubkey: originalAuthorPubkey,
+      eventId: eventId,
+    );
+
+    if (sentEvent == null) {
+      throw const RepostFailedException('Failed to publish repost to relays');
+    }
+
+    // Update local record with real event ID if we have a placeholder
+    final existingRecord = _repostRecords[addressableId];
+    if (existingRecord != null &&
+        existingRecord.repostEventId.startsWith('pending_')) {
+      final record = RepostRecord(
+        addressableId: addressableId,
+        repostEventId: sentEvent.id,
+        originalAuthorPubkey: originalAuthorPubkey,
+        createdAt: existingRecord.createdAt,
+      );
+      _repostRecords[addressableId] = record;
+      await _localStorage?.saveRepostRecord(record);
+    }
+
+    return sentEvent.id;
+  }
+
+  /// Unrepost a video.
+  ///
+  /// Creates and publishes a Kind 5 deletion event referencing the
+  /// original repost event. Removes the repost record from local storage.
+  ///
+  /// If the device is offline and offline queuing is enabled, the action
+  /// is queued for later sync and the UI should be updated optimistically.
+  ///
+  /// Throws `UnrepostFailedException` if the operation fails.
+  /// Throws `NotRepostedException` if the video is not currently reposted.
+  Future<void> unrepostVideo(String addressableId) async {
+    await _ensureInitialized();
+
+    // Try in-memory cache first, then fall back to database
+    var record = _repostRecords[addressableId];
+    if (record == null && _localStorage != null) {
+      record = await _localStorage.getRepostRecord(addressableId);
+    }
+
+    if (record == null) {
+      throw NotRepostedException(addressableId);
+    }
+
+    // Check if offline and queue if needed
+    if (_isOnline != null && !_isOnline() && _queueOfflineAction != null) {
+      await _queueOfflineAction(
+        isRepost: false,
+        addressableId: addressableId,
+        originalAuthorPubkey: record.originalAuthorPubkey,
+      );
+
+      // Remove from cache and storage optimistically
+      _repostRecords.remove(addressableId);
+      await _localStorage?.deleteRepostRecord(addressableId);
+      _emitRepostedIds();
+
+      return;
+    }
+
+    // Skip publishing deletion if this was a pending repost that never synced
+    if (!record.repostEventId.startsWith('pending_')) {
+      // Publish Kind 5 deletion event via NostrClient
+      final deletionEvent = await _nostrClient.deleteEvent(
+        record.repostEventId,
+      );
+
+      if (deletionEvent == null) {
+        throw const UnrepostFailedException(
+          'Failed to publish unrepost deletion',
+        );
+      }
+    }
+
+    // Remove from cache and storage
+    _repostRecords.remove(addressableId);
+    await _localStorage?.deleteRepostRecord(addressableId);
+    _emitRepostedIds();
+  }
+
+  /// Execute an unrepost action directly (for use by sync service).
+  ///
+  /// This method bypasses offline queuing and directly publishes to relays.
+  /// Used by PendingActionService to execute queued actions.
+  Future<void> executeUnrepostAction(String addressableId) async {
+    // Try to get the record - it may not exist if the repost was also offline
+    var record = _repostRecords[addressableId];
+    if (record == null && _localStorage != null) {
+      record = await _localStorage.getRepostRecord(addressableId);
+    }
+
+    // If no record exists, the repost was never synced either, so we're done
+    if (record == null) {
+      return;
+    }
+
+    // Skip publishing if this was a pending repost
+    if (record.repostEventId.startsWith('pending_')) {
+      // Just clean up local storage
+      _repostRecords.remove(addressableId);
+      await _localStorage?.deleteRepostRecord(addressableId);
+      _emitRepostedIds();
+      return;
+    }
+
+    // Publish Kind 5 deletion event via NostrClient
+    final deletionEvent = await _nostrClient.deleteEvent(
+      record.repostEventId,
+    );
+
+    if (deletionEvent == null) {
+      throw const UnrepostFailedException(
+        'Failed to publish unrepost deletion',
+      );
+    }
+
+    // Remove from cache and storage
+    _repostRecords.remove(addressableId);
+    await _localStorage?.deleteRepostRecord(addressableId);
+    _emitRepostedIds();
+  }
+
+  /// Toggle repost status for a video.
+  ///
+  /// If the video is not reposted, reposts it and returns `true`.
+  /// If the video is reposted, unreposts it and returns `false`.
+  ///
+  /// Parameters:
+  /// - [addressableId]: The addressable ID of the video (kind:pubkey:d-tag)
+  /// - [originalAuthorPubkey]: The pubkey of the video's author
+  /// - [eventId]: Optional event ID for better relay compatibility
+  /// - [currentCount]: The current repost count displayed in the UI. When
+  ///   provided, the repository caches the adjusted count (incremented or
+  ///   decremented) so that future [getRepostCount] calls return the correct
+  ///   value instead of a stale NIP-45 COUNT from relays.
+  ///
+  /// This is a convenience method that combines [isReposted], [repostVideo],
+  /// and [unrepostVideo].
+  Future<bool> toggleRepost({
+    required String addressableId,
+    required String originalAuthorPubkey,
+    String? eventId,
+    int? currentCount,
+  }) async {
+    await _ensureInitialized();
+
+    // Query the database directly as source of truth to avoid cache/db
+    // inconsistency after app restart
+    final isCurrentlyReposted =
+        await _localStorage?.isReposted(addressableId) ??
+        _repostRecords.containsKey(addressableId);
+
+    if (isCurrentlyReposted) {
+      await unrepostVideo(addressableId);
+      if (currentCount != null) {
+        _cacheRepostCount(addressableId, currentCount - 1);
+      }
+      return false;
+    } else {
+      await repostVideo(
+        addressableId: addressableId,
+        originalAuthorPubkey: originalAuthorPubkey,
+        eventId: eventId,
+      );
+      if (currentCount != null) {
+        _cacheRepostCount(addressableId, currentCount + 1);
+      }
+      return true;
+    }
+  }
+
+  /// Get a repost record by addressable ID.
+  ///
+  /// Returns the full [RepostRecord] including the repost event ID,
+  /// or `null` if the video is not reposted.
+  Future<RepostRecord?> getRepostRecord(String addressableId) async {
+    await _ensureInitialized();
+    return _repostRecords[addressableId];
+  }
+
+  /// Sync all user's reposts from relays.
+  ///
+  /// Fetches the user's Kind 16 events from relays and updates local storage.
+  /// This should be called on startup to ensure local state matches relay
+  /// state.
+  ///
+  /// Returns a [RepostsSyncResult] containing all synced data needed by UI.
+  ///
+  /// Throws `SyncFailedException` if syncing fails.
+  Future<RepostsSyncResult> syncUserReposts() async {
+    // First, load from local storage (fast)
+    if (_localStorage != null) {
+      final records = await _localStorage.getAllRepostRecords();
+      for (final record in records) {
+        _repostRecords[record.addressableId] = record;
+      }
+      _emitRepostedIds();
+    }
+
+    // Then, fetch from relays (authoritative)
+    final filter = Filter(
+      kinds: const [EventKind.genericRepost],
+      authors: [_nostrClient.publicKey],
+      limit: _defaultRepostFetchLimit,
+    );
+
+    try {
+      final events = await _nostrClient.queryEvents([filter]);
+      final newRecords = <RepostRecord>[];
+
+      for (final event in events) {
+        final addressableId = _extractAddressableId(event);
+        final authorPubkey = _extractOriginalAuthorPubkey(event);
+
+        if (addressableId != null && authorPubkey != null) {
+          final record = RepostRecord(
+            addressableId: addressableId,
+            repostEventId: event.id,
+            originalAuthorPubkey: authorPubkey,
+            createdAt: DateTime.fromMillisecondsSinceEpoch(
+              event.createdAt * 1000,
+            ),
+          );
+
+          // Only update if we don't have this record or the new one is newer
+          final existing = _repostRecords[addressableId];
+          if (existing == null ||
+              record.createdAt.isAfter(existing.createdAt)) {
+            _repostRecords[addressableId] = record;
+            newRecords.add(record);
+          }
+        }
+      }
+
+      // Batch save new records to storage
+      if (newRecords.isNotEmpty && _localStorage != null) {
+        await _localStorage.saveRepostRecordsBatch(newRecords);
+      }
+
+      _emitRepostedIds();
+      _isInitialized = true;
+
+      return _buildSyncResult();
+    } catch (e) {
+      // If relay sync fails but we have local data, don't throw
+      if (_repostRecords.isNotEmpty) {
+        _isInitialized = true;
+        return _buildSyncResult();
+      }
+      throw SyncFailedException('Failed to sync user reposts: $e');
+    }
+  }
+
+  /// Fetch reposted addressable IDs for any user from relays.
+  ///
+  /// Unlike [syncUserReposts], this method:
+  /// - Does NOT cache results locally (since it's not the current user's data)
+  /// - Does NOT require authentication
+  /// - Is intended for viewing other users' reposted content
+  ///
+  /// Returns a list of addressable IDs that the specified user has reposted,
+  /// ordered by recency (most recent first).
+  ///
+  /// Parameters:
+  /// - [pubkey]: The public key (hex) of the user whose reposts to fetch
+  ///
+  /// Throws [FetchRepostsFailedException] if the fetch fails.
+  Future<List<String>> fetchUserReposts(String pubkey) async {
+    final filter = Filter(
+      kinds: const [EventKind.genericRepost],
+      authors: [pubkey],
+      limit: _defaultRepostFetchLimit,
+    );
+
+    try {
+      final events = await _nostrClient.queryEvents([filter]);
+      final repostedIds = <String>[];
+      final seenIds = <String>{};
+
+      // Sort events by createdAt descending (most recent first)
+      events.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      for (final event in events) {
+        final addressableId = _extractAddressableId(event);
+        if (addressableId != null && !seenIds.contains(addressableId)) {
+          seenIds.add(addressableId);
+          repostedIds.add(addressableId);
+        }
+      }
+
+      return repostedIds;
+    } catch (e) {
+      throw FetchRepostsFailedException(
+        'Failed to fetch reposts for user $pubkey: $e',
+      );
+    }
+  }
+
+  /// Fetch repost records for any user from relays with full metadata.
+  ///
+  /// Similar to [fetchUserReposts] but returns full [RepostRecord] objects
+  /// including repost event IDs and timestamps.
+  ///
+  /// Parameters:
+  /// - [pubkey]: The public key (hex) of the user whose reposts to fetch
+  ///
+  /// Throws [FetchRepostsFailedException] if the fetch fails.
+  Future<List<RepostRecord>> fetchUserRepostRecords(String pubkey) async {
+    final filter = Filter(
+      kinds: const [EventKind.genericRepost],
+      authors: [pubkey],
+      limit: _defaultRepostFetchLimit,
+    );
+
+    try {
+      final events = await _nostrClient.queryEvents([filter]);
+      final records = <RepostRecord>[];
+      final seenIds = <String>{};
+
+      // Sort events by createdAt descending (most recent first)
+      events.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      for (final event in events) {
+        final addressableId = _extractAddressableId(event);
+        final authorPubkey = _extractOriginalAuthorPubkey(event);
+
+        if (addressableId != null &&
+            authorPubkey != null &&
+            !seenIds.contains(addressableId)) {
+          seenIds.add(addressableId);
+          records.add(
+            RepostRecord(
+              addressableId: addressableId,
+              repostEventId: event.id,
+              originalAuthorPubkey: authorPubkey,
+              createdAt: DateTime.fromMillisecondsSinceEpoch(
+                event.createdAt * 1000,
+              ),
+            ),
+          );
+        }
+      }
+
+      return records;
+    } catch (e) {
+      throw FetchRepostsFailedException(
+        'Failed to fetch reposts for user $pubkey: $e',
+      );
+    }
+  }
+
+  /// Builds a [RepostsSyncResult] from the current in-memory cache.
+  RepostsSyncResult _buildSyncResult() {
+    // Sort records by createdAt descending (most recent first)
+    final sortedRecords = _repostRecords.values.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    final orderedAddressableIds = sortedRecords
+        .map((r) => r.addressableId)
+        .toList();
+    final addressableIdToRepostId = <String, String>{};
+    for (final record in sortedRecords) {
+      addressableIdToRepostId[record.addressableId] = record.repostEventId;
+    }
+
+    return RepostsSyncResult(
+      orderedAddressableIds: orderedAddressableIds,
+      addressableIdToRepostId: addressableIdToRepostId,
+    );
+  }
+
+  /// Initialize the repository — load from local cache, then subscribe for
+  /// real-time cross-device sync.
+  ///
+  /// Follows the same pattern as `FollowRepository.initialize()`:
+  /// 1. Load persisted records from local storage for immediate UI display.
+  /// 2. Set up a persistent Kind 16 subscription for live updates.
+  ///
+  /// Safe to call multiple times (idempotent).
+  Future<void> initialize() async {
+    if (_isInitialized) return;
+
+    // Load from local storage first for immediate UI display
+    if (_localStorage != null) {
+      final records = await _localStorage.getAllRepostRecords();
+      for (final record in records) {
+        _repostRecords[record.addressableId] = record;
+      }
+      _emitRepostedIds();
+    }
+
+    // Subscribe to reposts for real-time sync and cross-device updates
+    if (_nostrClient.hasKeys) {
+      _subscribeToReposts();
+    }
+
+    _isInitialized = true;
+  }
+
+  /// Subscribe to reposts for real-time sync and cross-device updates.
+  ///
+  /// Creates a long-running subscription to the current user's Kind 16 events.
+  /// When a newer repost arrives (from another device or this one),
+  /// updates the local cache.
+  void _subscribeToReposts() {
+    final currentUserPubkey = _nostrClient.publicKey;
+    if (currentUserPubkey.isEmpty) return;
+
+    // Use a deterministic subscription ID so we can unsubscribe later
+    _repostSubscriptionId = 'reposts_repo_reposts_$currentUserPubkey';
+
+    final eventStream = _nostrClient.subscribe(
+      [
+        Filter(
+          authors: [currentUserPubkey],
+          kinds: const [EventKind.genericRepost],
+          limit: 1,
+        ),
+      ],
+      subscriptionId: _repostSubscriptionId,
+    );
+
+    _repostSubscription = eventStream.listen(
+      _processIncomingRepost,
+      onError: (Object error) {
+        // Subscription errors are non-fatal; log and continue
+      },
+    );
+  }
+
+  /// Process an incoming Kind 16 repost event from the subscription.
+  ///
+  /// Validates the event, deduplicates against existing records, and
+  /// updates the in-memory cache + local storage.
+  void _processIncomingRepost(Event event) {
+    if (_isDisposed) return;
+
+    // Only process Kind 16 generic reposts from the current user
+    if (event.kind != EventKind.genericRepost) return;
+    if (event.pubkey != _nostrClient.publicKey) return;
+
+    final addressableId = _extractAddressableId(event);
+    if (addressableId == null) return;
+
+    final authorPubkey = _extractOriginalAuthorPubkey(event);
+    if (authorPubkey == null) return;
+
+    final createdAt = DateTime.fromMillisecondsSinceEpoch(
+      event.createdAt * 1000,
+    );
+
+    // Deduplicate: only update if newer than existing record
+    final existing = _repostRecords[addressableId];
+    if (existing != null && !createdAt.isAfter(existing.createdAt)) return;
+
+    final record = RepostRecord(
+      addressableId: addressableId,
+      repostEventId: event.id,
+      originalAuthorPubkey: authorPubkey,
+      createdAt: createdAt,
+    );
+
+    _repostRecords[addressableId] = record;
+    unawaited(_localStorage?.saveRepostRecord(record));
+    _emitRepostedIds();
+  }
+
+  /// Clear all local repost data.
+  ///
+  /// Used when logging out or clearing user data.
+  /// Does not affect data on relays.
+  ///
+  /// Safe to call after [dispose] -- the cache is still cleared but no
+  /// stream emission is attempted.
+  Future<void> clearCache() async {
+    _repostRecords.clear();
+    _localCountCache.clear();
+    await _localStorage?.clearAll();
+    _emitRepostedIds();
+    _isInitialized = false;
+  }
+
+  /// Dispose of resources.
+  ///
+  /// Cancels the repost subscription and closes the stream controller.
+  /// Should be called when the repository is no longer needed.
+  void dispose() {
+    _isDisposed = true;
+    unawaited(_repostSubscription?.cancel());
+    if (_repostSubscriptionId != null) {
+      unawaited(_nostrClient.unsubscribe(_repostSubscriptionId!));
+      _repostSubscriptionId = null;
+    }
+    unawaited(_repostedIdsController.close());
+  }
+
+  /// Ensures the repository is initialized with data from storage.
+  Future<void> _ensureInitialized() async {
+    if (_isInitialized) return;
+
+    if (_localStorage != null) {
+      final records = await _localStorage.getAllRepostRecords();
+      for (final record in records) {
+        _repostRecords[record.addressableId] = record;
+      }
+      _emitRepostedIds();
+    }
+    _isInitialized = true;
+  }
+
+  /// Extracts the addressable ID from a repost event's 'a' tag.
+  ///
+  /// According to NIP-18, generic reposts use the 'a' tag to reference
+  /// the addressable event being reposted.
+  String? _extractAddressableId(Event event) {
+    for (final tag in event.tags) {
+      if (tag is List && tag.isNotEmpty && tag[0] == 'a' && tag.length > 1) {
+        return tag[1] as String;
+      }
+    }
+    return null;
+  }
+
+  /// Extracts the original author pubkey from a repost event's 'p' tag.
+  String? _extractOriginalAuthorPubkey(Event event) {
+    for (final tag in event.tags) {
+      if (tag is List && tag.isNotEmpty && tag[0] == 'p' && tag.length > 1) {
+        return tag[1] as String;
+      }
+    }
+    return null;
+  }
+}

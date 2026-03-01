@@ -1,0 +1,27 @@
+# ABOUTME: CI workflow for the comments_repository package.
+# ABOUTME: Runs tests, formatting, and analysis only when comments_repository files change.
+
+name: Comments Repository CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/packages/comments_repository/**"
+      - ".github/workflows/comments_repository.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/packages/comments_repository/**"
+      - ".github/workflows/comments_repository.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/flutter_package.yml@v1
+    with:
+      working_directory: "mobile/packages/comments_repository"
+      min_coverage: 80

@@ -1,0 +1,7 @@
+appId: co.openvine.app
+---
+- assertVisible: Settings
+- assertVisible: Support
+- assertVisible: Privacy policy
+- assertVisible: Safety center
+- assertVisible: FAQ

@@ -1,0 +1,45 @@
+appId: co.openvine.app
+tags:
+  - Social
+---
+#TC to unfollow a user,
+# given the user is logged in in the app and already following VIDEO_USER,
+# by starting to unfollow and validate it on the home screen and on the following count in the profile
+#Steps:
+# 1. Given an already logged in user, tap on Home: Home screen is presented with VIDEO_USER videos displayed
+# 2. Tap on a VIDEO_USER video and unfollow the user VIDEO_USER. Expected: Follow is displayed
+# 3. Browse to the home screen: Home screen is empty
+# 4. Tap on profile: validate 0 following user
+
+# 1. Given an already logged in user, tap on Explore: Explore screen is presented
+- doubleTapOn:
+    id: explore_tab
+    delay: 100
+- runFlow: ../asserts/assertExplore.yaml
+- waitForAnimationToEnd
+
+# 2. Tap on a VIDEO_USER video and unfollow the user VIDEO_USER. Expected: Follow is displayed
+- assertVisible:
+    text: ${VIDEO_DATA}
+- tapOn:
+    id: play_button
+    index: 0
+- runFlow: "../asserts/assertVideoUser&Description.yaml"
+- assertVisible: Following
+#Follow VIDEO_USER
+- tapOn: Following
+- assertVisible: Follow
+
+# 3. Browse to the home screen: VIDEO_USER videos are displayed validated thru username
+- doubleTapOn:
+    id: home_tab
+    delay: 100
+- runFlow: ../asserts/assertFreshHome.yaml
+
+# 4. Tap on profile: validate 0 following user
+- doubleTapOn:
+    id: profile_tab
+    delay: 100
+- assertVisible: |-
+    0
+    Following

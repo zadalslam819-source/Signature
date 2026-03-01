@@ -1,0 +1,148 @@
+// ABOUTME: Widget test verifying settings screens use proper Vine scaffold structure
+// ABOUTME: Tests that settings screens have green AppBar and black background
+
+import 'package:divine_ui/divine_ui.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:openvine/providers/app_providers.dart';
+import 'package:openvine/screens/notification_settings_screen.dart';
+import 'package:openvine/screens/settings_screen.dart';
+import 'package:openvine/services/auth_service.dart';
+
+class _MockAuthService extends Mock implements AuthService {}
+
+void main() {
+  group('Settings Screen Scaffold Structure', () {
+    late _MockAuthService mockAuthService;
+
+    setUp(() {
+      mockAuthService = _MockAuthService();
+      when(() => mockAuthService.isAuthenticated).thenReturn(true);
+      when(() => mockAuthService.isAnonymous).thenReturn(false);
+    });
+
+    testWidgets('SettingsScreen has nav green AppBar', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authServiceProvider.overrideWithValue(mockAuthService),
+            currentAuthStateProvider.overrideWithValue(AuthState.authenticated),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Find the AppBar
+      final appBarFinder = find.byType(AppBar);
+      expect(appBarFinder, findsOneWidget);
+
+      // Verify AppBar color is nav green
+      final AppBar appBar = tester.widget(appBarFinder);
+      expect(appBar.backgroundColor, equals(VineTheme.navGreen));
+
+      // Dispose and pump to clear any pending timers from overlay visibility
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+    });
+
+    testWidgets('SettingsScreen has black background', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authServiceProvider.overrideWithValue(mockAuthService),
+            currentAuthStateProvider.overrideWithValue(AuthState.authenticated),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Find the Scaffold
+      final scaffoldFinder = find.byType(Scaffold);
+      expect(scaffoldFinder, findsOneWidget);
+
+      // Verify Scaffold background is black
+      final Scaffold scaffold = tester.widget(scaffoldFinder);
+      expect(scaffold.backgroundColor, equals(Colors.black));
+
+      // Dispose and pump to clear any pending timers from overlay visibility
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+    });
+
+    testWidgets('SettingsScreen has back button when pushed', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authServiceProvider.overrideWithValue(mockAuthService),
+            currentAuthStateProvider.overrideWithValue(AuthState.authenticated),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => ElevatedButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const SettingsScreen(),
+                    ),
+                  ),
+                  child: const Text('Open Settings'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      // Tap to navigate to settings
+      await tester.tap(find.text('Open Settings'));
+      await tester.pumpAndSettle();
+
+      // Verify back button exists
+      expect(find.byType(BackButton), findsOneWidget);
+      // TODO(any): Fix and re-enable these tests
+    }, skip: true);
+
+    testWidgets('NotificationSettingsScreen has nav green AppBar', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [authServiceProvider.overrideWithValue(mockAuthService)],
+          child: const MaterialApp(home: NotificationSettingsScreen()),
+        ),
+      );
+
+      // Find the AppBar
+      final appBarFinder = find.byType(AppBar);
+      expect(appBarFinder, findsOneWidget);
+
+      // Verify AppBar color is nav green
+      final AppBar appBar = tester.widget(appBarFinder);
+      expect(appBar.backgroundColor, equals(VineTheme.navGreen));
+    });
+
+    testWidgets('NotificationSettingsScreen has black background', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [authServiceProvider.overrideWithValue(mockAuthService)],
+          child: const MaterialApp(home: NotificationSettingsScreen()),
+        ),
+      );
+
+      // Find the Scaffold
+      final scaffoldFinder = find.byType(Scaffold);
+      expect(scaffoldFinder, findsOneWidget);
+
+      // Verify Scaffold background is black
+      final Scaffold scaffold = tester.widget(scaffoldFinder);
+      expect(scaffold.backgroundColor, equals(VineTheme.backgroundColor));
+    });
+  });
+}

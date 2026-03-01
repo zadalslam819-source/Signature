@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: keycast-postgres-dev
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: keycast
+      POSTGRES_USER: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  keycast:
+    build:
+      context: .
+    command: unified
+    ports:
+      - "3000:3000"
+      - "5173:5173"
+    volumes:
+      - ./master.key:/app/master.key:ro
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/keycast
+      RUST_LOG: debug,keycast_signer=debug
+      MASTER_KEY_PATH: /app/master.key
+      USE_GCP_KMS: "false"
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174
+      BUNKER_RELAYS: ${BUNKER_RELAYS:?Set BUNKER_RELAYS in .env}
+      WEB_BUILD_DIR: /app/web
+      FROM_EMAIL: test@localhost
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      VITE_DOMAIN: http://localhost:3000
+      VITE_ALLOWED_PUBKEYS: ${VITE_ALLOWED_PUBKEYS:-}
+      VITE_NDK_EXPLICIT_RELAYS: ${VITE_NDK_EXPLICIT_RELAYS:-}
+      VITE_NDK_BUNKER_RELAYS: ${VITE_NDK_BUNKER_RELAYS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh", "unified"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Test runner service (uses test database)
+  test:
+    build:
+      context: .
+      target: rust-builder
+    command: cargo test --workspace
+    volumes:
+      - ./api:/app/api
+      - ./core:/app/core
+      - ./signer:/app/signer
+      - ./keycast:/app/keycast
+      - ./database:/app/database
+    environment:
+      RUST_LOG: debug
+      DATABASE_URL: postgres://postgres:password@postgres:5432/keycast_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_dev_data:

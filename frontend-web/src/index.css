@@ -1,0 +1,253 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Brand: Off White #F9F7F6 */
+    --background: 30 18% 97%;
+    /* Brand: Dark Green #07241B */
+    --foreground: 158 67% 8%;
+
+    --card: 30 18% 97%;
+    --card-foreground: 158 67% 8%;
+
+    --popover: 30 18% 97%;
+    --popover-foreground: 158 67% 8%;
+
+    /* Brand primary: #27C58B -> hsl(158 67% 46%) */
+    --primary: 158 67% 46%;
+    /* Brand Dark Green for text on green buttons - 7.5:1 contrast ratio */
+    --primary-foreground: 158 67% 8%;
+
+    /* Brand palette */
+    --brand-green: 158 67% 46%;        /* #27C58B - same as primary */
+    --brand-dark-green: 158 67% 8%;    /* #07241B */
+    --brand-light-green: 114 88% 90%;  /* #D0FBCB */
+    --brand-off-white: 30 18% 97%;     /* #F9F7F6 */
+
+    /* Secondary palette for accents (full, light, dark variants) */
+    --brand-yellow: 56 100% 62%;       /* #FFF140 */
+    --brand-yellow-light: 56 100% 86%; /* #FFFAB8 */
+    --brand-yellow-dark: 53 50% 14%;   /* #363313 */
+    --brand-lime: 79 100% 63%;         /* #D2FF40 */
+    --brand-lime-light: 79 100% 89%;   /* #F1FFC8 */
+    --brand-lime-dark: 79 50% 12%;     /* #272F0E */
+    --brand-pink: 338 100% 75%;        /* #FF7FAF */
+    --brand-pink-light: 338 100% 93%;  /* #FFDEEA */
+    --brand-pink-dark: 338 70% 15%;    /* #3E0C1F */
+    --brand-orange: 20 100% 63%;       /* #FF7640 */
+    --brand-orange-light: 20 100% 89%; /* #FFD8C9 */
+    --brand-orange-dark: 20 64% 17%;   /* #471F10 */
+    --brand-violet: 236 100% 82%;      /* #A3A9FF */
+    --brand-violet-light: 236 100% 94%; /* #E1E3FF */
+    --brand-violet-dark: 254 40% 22%;  /* #2D214D */
+    --brand-purple: 254 100% 70%;      /* #8568FF */
+    --brand-purple-light: 254 100% 91%; /* #DDD4FF */
+    --brand-purple-dark: 254 72% 21%;  /* #231557 */
+    --brand-blue: 196 86% 57%;         /* #34BBF1 */
+    --brand-blue-light: 196 95% 90%;   /* #CCEEFE */
+    --brand-blue-dark: 207 72% 14%;    /* #0A223C */
+
+    --secondary: 30 18% 94%;
+    --secondary-foreground: 158 67% 8%;
+
+    --muted: 30 18% 94%;
+    /* Muted text uses brand Dark Green - apply opacity via classes for hierarchy */
+    --muted-foreground: 158 67% 8%;
+
+    --accent: 30 18% 94%;
+    --accent-foreground: 158 67% 8%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 30 18% 88%;
+    --input: 30 18% 88%;
+    /* Ring uses brand dark green */
+    --ring: 158 67% 8%;
+
+    --radius: 0.5rem;
+
+    /* Safe area insets for notched devices */
+    --sat: env(safe-area-inset-top, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+
+    /* Design tokens for improved styling */
+    --radius-small: 0.5rem;
+    --radius-medium: 0.75rem;
+    --radius-large: 1rem;
+    --radius-xl: 1.5rem;
+
+    --shadow-sm: 0 2px 8px rgba(39, 197, 139, 0.08);
+    --shadow-md: 0 4px 16px rgba(39, 197, 139, 0.12);
+    --shadow-lg: 0 8px 32px rgba(39, 197, 139, 0.16);
+
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Sidebar uses brand colors */
+    --sidebar-background: 30 18% 97%;
+    --sidebar-foreground: 158 67% 8%;
+    --sidebar-primary: 158 67% 46%;
+    --sidebar-primary-foreground: 30 18% 97%;
+    --sidebar-accent: 30 18% 94%;
+    --sidebar-accent-foreground: 158 67% 8%;
+    --sidebar-border: 30 18% 90%;
+    --sidebar-ring: 158 67% 46%;
+  }
+
+  .dark {
+    /* Brand: Dark Green #07241B for dark mode background */
+    --background: 158 67% 8%;
+    /* Brand: Off White #F9F7F6 for dark mode text */
+    --foreground: 30 18% 97%;
+
+    --card: 158 67% 8%;
+    --card-foreground: 30 18% 97%;
+
+    --popover: 158 67% 8%;
+    --popover-foreground: 30 18% 97%;
+
+    /* Brand primary: #27C58B -> hsl(158 67% 46%) - same in dark mode */
+    --primary: 158 67% 46%;
+    /* Brand Dark Green for text on green buttons */
+    --primary-foreground: 158 67% 8%;
+
+    /* Brand palette (same values, adjusted for dark mode visibility where needed) */
+    --brand-green: 158 67% 46%;        /* #27C58B - same as primary */
+    --brand-dark-green: 158 67% 8%;    /* #07241B */
+    --brand-light-green: 114 88% 90%;  /* #D0FBCB */
+    --brand-off-white: 30 18% 97%;     /* #F9F7F6 */
+
+    /* Secondary palette for accents (full, light, dark variants) */
+    --brand-yellow: 56 100% 62%;       /* #FFF140 */
+    --brand-yellow-light: 56 100% 86%; /* #FFFAB8 */
+    --brand-yellow-dark: 53 50% 14%;   /* #363313 */
+    --brand-lime: 79 100% 63%;         /* #D2FF40 */
+    --brand-lime-light: 79 100% 89%;   /* #F1FFC8 */
+    --brand-lime-dark: 79 50% 12%;     /* #272F0E */
+    --brand-pink: 338 100% 75%;        /* #FF7FAF */
+    --brand-pink-light: 338 100% 93%;  /* #FFDEEA */
+    --brand-pink-dark: 338 70% 15%;    /* #3E0C1F */
+    --brand-orange: 20 100% 63%;       /* #FF7640 */
+    --brand-orange-light: 20 100% 89%; /* #FFD8C9 */
+    --brand-orange-dark: 20 64% 17%;   /* #471F10 */
+    --brand-violet: 236 100% 82%;      /* #A3A9FF */
+    --brand-violet-light: 236 100% 94%; /* #E1E3FF */
+    --brand-violet-dark: 254 40% 22%;  /* #2D214D */
+    --brand-purple: 254 100% 70%;      /* #8568FF */
+    --brand-purple-light: 254 100% 91%; /* #DDD4FF */
+    --brand-purple-dark: 254 72% 21%;  /* #231557 */
+    --brand-blue: 196 86% 57%;         /* #34BBF1 */
+    --brand-blue-light: 196 95% 90%;   /* #CCEEFE */
+    --brand-blue-dark: 207 72% 14%;    /* #0A223C */
+
+    /* Slightly lighter dark green for secondary/muted backgrounds */
+    --secondary: 158 50% 12%;
+    --secondary-foreground: 30 18% 97%;
+
+    --muted: 158 50% 12%;
+    /* Dimmed off-white for secondary text */
+    --muted-foreground: 30 15% 70%;
+
+    --accent: 158 50% 12%;
+    --accent-foreground: 30 18% 97%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 30 18% 97%;
+
+    /* Lighter green for borders in dark mode */
+    --border: 158 40% 18%;
+    --input: 158 40% 18%;
+    --ring: 158 67% 46%;
+
+    /* Sidebar uses brand dark green */
+    --sidebar-background: 158 67% 8%;
+    --sidebar-foreground: 30 18% 97%;
+
+    --sidebar-primary: 30 18% 97%;
+
+    --sidebar-primary-foreground: 158 67% 8%;
+
+    --sidebar-accent: 158 50% 12%;
+
+    --sidebar-accent-foreground: 30 18% 97%;
+
+    --sidebar-border: 158 40% 18%;
+
+    --sidebar-ring: 158 67% 46%;
+  }
+}
+
+/* Prevent browser overflow anchoring from shifting feed on dynamic updates */
+.feed-root {
+  overflow-anchor: none;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  /* Custom font for headings and logo */
+  h1, h2, h3, h4, h5, h6, .font-logo {
+    font-family: 'Bricolage Grotesque', system-ui, -apple-system, sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  /* Ensure text inherits color inside primary-colored containers (buttons, tabs, etc.) */
+  .text-primary-foreground *,
+  [class*="text-primary-foreground"] *,
+  [data-state="active"][class*="text-primary-foreground"] * {
+    color: inherit;
+  }
+
+  /* Improved focus states */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-brand-light-green ring-offset-2 ring-offset-background;
+  }
+
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Better link styles */
+  a {
+    @apply transition-colors duration-200;
+  }
+
+  /* Custom selection color */
+  ::selection {
+    @apply bg-brand-light-green text-brand-dark-green;
+  }
+
+  /* Global scrollbar styling - subtle, theme-aware */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+  }
+
+  /* Safe area support for mobile bottom navigation */
+  @supports (padding-bottom: env(safe-area-inset-bottom)) {
+    .safe-area-bottom {
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  }
+}

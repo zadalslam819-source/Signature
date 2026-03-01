@@ -1,0 +1,156 @@
+// ABOUTME: Base service for camera operations across different platforms
+// ABOUTME: Provides unified API for camera control, recording, and preview
+
+import 'dart:io';
+
+import 'package:divine_camera/divine_camera.dart'
+    show CameraLensMetadata, DivineCameraLens, DivineVideoQuality;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:openvine/models/video_recorder/video_recorder_flash_mode.dart';
+import 'package:openvine/services/video_recorder/camera/camera_linux_service.dart';
+import 'package:openvine/services/video_recorder/camera/camera_macos_service.dart';
+import 'package:openvine/services/video_recorder/camera/camera_mobile_service.dart';
+import 'package:pro_video_editor/pro_video_editor.dart';
+
+/// Base service for camera operations across different platforms.
+/// Provides a unified API for camera control, recording, and preview.
+abstract class CameraService {
+  /// Protected constructor for subclasses
+  CameraService({required this.onUpdateState, required this.onAutoStopped});
+
+  /// Factory constructor that returns the appropriate camera service
+  /// implementation based on the current platform.
+  factory CameraService.create({
+    required void Function({bool? forceCameraRebuild}) onUpdateState,
+    required void Function(EditorVideo video) onAutoStopped,
+  }) {
+    if (!kIsWeb && Platform.isMacOS) {
+      return CameraMacOSService(
+        onUpdateState: onUpdateState,
+        onAutoStopped: onAutoStopped,
+      );
+    }
+    if (!kIsWeb && Platform.isLinux) {
+      return CameraLinuxService(
+        onUpdateState: onUpdateState,
+        onAutoStopped: onAutoStopped,
+      );
+    }
+    return CameraMobileService(
+      onUpdateState: onUpdateState,
+      onAutoStopped: onAutoStopped,
+    );
+  }
+
+  /// Callback to trigger UI updates when camera state changes.
+  final void Function({bool? forceCameraRebuild}) onUpdateState;
+
+  final void Function(EditorVideo video) onAutoStopped;
+
+  /// Initializes the camera and prepares it for use.
+  ///
+  /// [videoQuality] specifies the video recording quality (default: FHD/1080p).
+  /// [initialLens] specifies which camera lens to initialize with (default: front).
+  Future<void> initialize({
+    DivineVideoQuality videoQuality = DivineVideoQuality.fhd,
+    DivineCameraLens initialLens = DivineCameraLens.front,
+  });
+
+  /// Releases camera resources and cleans up.
+  Future<void> dispose();
+
+  /// Sets the flash mode. Returns true if successful.
+  Future<bool> setFlashMode(DivineFlashMode mode);
+
+  /// Sets the focus point in normalized coordinates (0.0-1.0).
+  Future<bool> setFocusPoint(Offset offset);
+
+  /// Sets the exposure point in normalized coordinates (0.0-1.0).
+  Future<bool> setExposurePoint(Offset offset);
+
+  /// Sets the zoom level. Returns true if successful.
+  Future<bool> setZoomLevel(double value);
+
+  /// Switches between front and back camera. Returns true if successful.
+  Future<bool> switchCamera();
+
+  /// Switches to a specific camera lens. Returns true if successful.
+  Future<bool> setLens(DivineCameraLens lens);
+
+  /// Starts video recording.
+  /// [outputDirectory] specifies where to save the video.
+  Future<bool> startRecording({Duration? maxDuration, String? outputDirectory});
+
+  /// Stops video recording.
+  Future<EditorVideo?> stopRecording();
+
+  /// Handles app lifecycle changes (pause, resume, etc.).
+  Future<void> handleAppLifecycleState(AppLifecycleState state);
+
+  /// The aspect ratio of the camera sensor.
+  double get cameraAspectRatio;
+
+  /// Minimum zoom level supported by the camera.
+  double get minZoomLevel;
+
+  /// Maximum zoom level supported by the camera.
+  double get maxZoomLevel;
+
+  /// Whether the camera is initialized and ready to use.
+  bool get isInitialized;
+
+  /// Whether the camera supports manual focus point selection.
+  bool get isFocusPointSupported;
+
+  /// Whether the camera is ready to record (initialized and not recording).
+  bool get canRecord;
+
+  /// Whether the device has multiple cameras to switch between.
+  bool get canSwitchCamera;
+
+  /// Whether a camera switch is currently in progress.
+  /// Used to block recording triggers during the switch.
+  bool get isSwitchingCamera;
+
+  /// Whether the device can active the camera-flash.
+  bool get hasFlash;
+
+  /// The current active camera lens.
+  DivineCameraLens get currentLens;
+
+  /// List of available camera lenses on this device.
+  List<DivineCameraLens> get availableLenses;
+
+  /// Metadata for the currently active camera lens.
+  /// Returns null if metadata is not available.
+  CameraLensMetadata? get currentLensMetadata;
+
+  /// Error message if initialization failed, null if successful.
+  String? get initializationError;
+
+  /// Enables or disables remote record control via volume buttons.
+  ///
+  /// When enabled, volume button presses will trigger the
+  /// [onRemoteRecordTrigger] callback instead of changing the system volume.
+  /// This allows users to start/stop recording using physical volume buttons
+  /// or Bluetooth accessories like clickers or earbuds.
+  ///
+  /// Returns `true` if successfully enabled/disabled.
+  Future<bool> setRemoteRecordControlEnabled({required bool enabled});
+
+  /// Enables or disables volume key interception.
+  ///
+  /// When disabled, volume buttons will change system volume instead of
+  /// triggering recording. Bluetooth media buttons are NOT affected.
+  /// Use this when a sound is selected and the user needs to adjust volume.
+  ///
+  /// Returns `true` if successfully set.
+  Future<bool> setVolumeKeysEnabled({required bool enabled});
+
+  /// Callback for when a remote record trigger is detected.
+  ///
+  /// This is called when the user presses a volume button or Bluetooth
+  /// remote while remote record control is enabled.
+  set onRemoteRecordTrigger(void Function()? callback);
+}

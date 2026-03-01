@@ -1,0 +1,68 @@
+[package]
+name = "keycast_api"
+description = "A Nostr key manager and remote signer"
+authors = ["Keycast Authors"]
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Feature flag to enable SQLite-based tests (disabled until migrated to PostgreSQL)
+sqlite-tests = []
+
+[dependencies]
+aes-gcm = "0.10"
+async-trait = "0.1"
+axum = "0.7"
+base64 = { workspace = true }
+bcrypt = "0.17.1"
+bip39 = "2.0"
+chrono = { workspace = true }
+config = { workspace = true }
+dashmap = "6.1"
+dotenv = { workspace = true }
+keycast_core = { path = "../core" }
+# UCAN for user-signed capability tokens
+ucan = "0.7.0-alpha.1"
+did-key = "0.2"
+bs58 = "0.5"
+anyhow = "1.0"
+secp256k1 = { version = "0.29", features = ["global-context", "rand-std"] }
+sha2 = "0.10"
+nostr = {workspace = true}
+nostr-sdk = {workspace = true}
+once_cell = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+sha256 = "1.5"
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { version = "0.6", features = ["trace", "util", "cors", "fs"] }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+urlencoding = "2.1"
+hex = "0.4"
+hkdf = "0.12"
+blake3 = "1.5"
+moka = { version = "0.12", features = ["future"] }
+reqwest = { version = "0.12", features = ["json"] }
+# Async bcrypt queue dependencies
+crossbeam-channel = "0.5"
+num_cpus = "1.16"
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+redis = { version = "0.27", features = ["tokio-comp", "aio"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1.5", features = ["full"] }
+http-body-util = "0.1"
+aes-gcm = "0.10"
+async-trait = "0.1"
+md5 = "0.7"
+bcrypt = "0.17.1"
+serial_test = "3.2"

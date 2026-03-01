@@ -1,0 +1,18 @@
+appId: co.openvine.app
+---
+- assertVisible: Complete Your Profile
+- assertVisible: Add your name, bio, and picture to get started
+- assertVisible: Set Up
+
+- assertVisible: Secure Your Account
+- assertVisible: Add email & password to recover your account on any device
+- assertVisible: Register
+#assert other profile items:
+- runFlow: assertProfile.yaml
+
+- assertNotVisible:
+    text: Loading...
+    optional: true
+- assertVisible: No Videos Yet
+- scroll
+- assertVisible: Share your first video to see it here

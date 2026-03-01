@@ -1,0 +1,48 @@
+# Development dependencies only - postgres and redis
+# Usage: docker compose -f docker-compose.deps.yml up -d
+# Then run: bun run dev
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: keycast-postgres
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: keycast
+      POSTGRES_USER: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: keycast-redis
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  relay:
+    image: ghcr.io/verse-pbc/relay_builder:latest
+    container_name: keycast-e2e-relay
+    environment:
+      IDLE_TIMEOUT: "0"
+    ports:
+      - "8080:8080"
+    profiles:
+      - e2e
+
+volumes:
+  postgres_data:
+  redis_data:

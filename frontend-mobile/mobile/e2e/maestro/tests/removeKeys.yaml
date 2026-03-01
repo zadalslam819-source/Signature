@@ -1,0 +1,38 @@
+appId: co.openvine.app
+---
+#TC to delete the user keys,
+# given the user is logged in in the app,
+# Opens the settings menu and remove the keys from the device
+#Steps:
+# 1. Open the settings page: Validate the settings modal is displayed
+# 2. Tap on Remove Keys from Device: The modal Remove Keys from Device is displayed
+# 3. Tap on cancel button: Validate Cancel button works
+# 4. Reopen the Remove modal and tap on Remove Keys: Final confirmation modal is displayed
+# 5. To do... receiving yellow box on the display
+
+# 1. Open the settings page: Validate the settings modal is displayed
+- runFlow: '../utils/openSettings.yaml'
+
+# 2. Tap on Remove Keys from Device: The modal Remove Keys from Device is displayed
+- scrollUntilVisible:
+    element:
+      text: |-
+        Remove Keys from Device
+        Delete your private key from this device only. Your content stays on relays, but you'll need your nsec backup to access your account again.
+# 3. Tap on cancel button: Validate Cancel button works
+- tapOn: |-
+    Remove Keys from Device
+    Delete your private key from this device only. Your content stays on relays, but you'll need your nsec backup to access your account again.
+
+- tapOn: Cancel
+
+- tapOn: |-
+    Remove Keys from Device
+    Delete your private key from this device only. Your content stays on relays, but you'll need your nsec backup to access your account again.
+
+# 4. Reopen the Remove modal and tap on Remove Keys: Final confirmation modal is displayed
+- assertVisible: Remove Keys
+
+- tapOn: Remove Keys
+
+- runFlow: '../asserts/assertLogin.yaml'

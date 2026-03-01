@@ -1,0 +1,23 @@
+[package]
+name = "cluster-hashring"
+version = "0.2.0"
+edition = "2021"
+description = "Redis-backed cluster membership with consistent hashing"
+
+[dependencies]
+anchorhash = "0.2"
+arc-swap = "1.7"
+futures-util = "0.3"
+rand = { workspace = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "aio"] }
+tokio = { workspace = true }
+tokio-util = "0.7"
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }

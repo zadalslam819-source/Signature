@@ -1,0 +1,268 @@
+@import 'tailwindcss';
+
+@plugin '@tailwindcss/typography';
+@plugin '@tailwindcss/forms';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-*: initial;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Bricolage Grotesque', system-ui, -apple-system, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', monospace;
+
+  /* Divine color palette - aligned with brand guide */
+  --color-divine-purple: #8B5CF6;
+  --color-divine-purple-dark: #7C3AED;
+  --color-divine-purple-light: #A78BFA;
+  --color-divine-green: #27C58B;
+  --color-divine-green-dark: #1AA575;
+  --color-divine-green-light: #D0FBCB;
+  --color-divine-green-muted: color-mix(in srgb, #27C58B 15%, transparent);
+  --color-divine-off-white: #F9F7F6;
+  --color-divine-dark-green: #072218;
+
+  /* Status colors */
+  --color-divine-success: #10B981;
+  --color-divine-error: #EF4444;
+  --color-divine-warning: #F59E0B;
+  --color-divine-info: #3B82F6;
+
+  /* Design tokens matching divine.video */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  /* Shadows with brand color tint */
+  --shadow-sm: 0 2px 8px rgba(39, 197, 139, 0.08);
+  --shadow-md: 0 4px 16px rgba(39, 197, 139, 0.12);
+  --shadow-lg: 0 8px 32px rgba(39, 197, 139, 0.16);
+}
+
+@utility container {
+  margin-inline: auto;
+}
+
+/*
+  The default border color has changed to `currentColor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
+
+/* Light mode (default) - matching divine.video */
+:root {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    padding: 1rem;
+
+    /* Light mode colors - matching divine.video */
+    --color-divine-bg: hsl(0 0% 100%);
+    --color-divine-surface: hsl(0 0% 100%);
+    --color-divine-border: hsl(214.3 31.8% 91.4%);
+    --color-divine-text: hsl(222.2 84% 4.9%);
+    --color-divine-text-secondary: hsl(215.4 16.3% 46.9%);
+    --color-divine-text-tertiary: #6B7280;
+    --color-divine-muted: hsl(210 40% 96.1%);
+
+    color-scheme: light;
+    background-color: var(--color-divine-bg);
+    color: var(--color-divine-text);
+}
+
+/* Dark mode - brand dark green theme (matched to divine.video) */
+:root.dark {
+    --color-divine-bg: #072218;
+    --color-divine-surface: #0F2E23;
+    --color-divine-border: #1C4033;
+    --color-divine-text: #F9F7F6;
+    --color-divine-text-secondary: #BEB3A7;
+    --color-divine-text-tertiary: #9CA3AF;
+    --color-divine-muted: #0F2E23;
+
+    color-scheme: dark;
+    background-color: var(--color-divine-bg);
+    color: var(--color-divine-text);
+}
+
+/* System preference dark mode */
+@media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+        --color-divine-bg: #072218;
+        --color-divine-surface: #0F2E23;
+        --color-divine-border: #1C4033;
+        --color-divine-text: #F9F7F6;
+        --color-divine-text-secondary: #BEB3A7;
+        --color-divine-text-tertiary: #9CA3AF;
+        --color-divine-muted: #0F2E23;
+
+        color-scheme: dark;
+        background-color: var(--color-divine-bg);
+        color: var(--color-divine-text);
+    }
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.02em;
+    color: var(--color-divine-text);
+}
+
+a.bordered {
+    border-bottom: 1px dashed var(--color-divine-border);
+}
+
+a.bordered:hover {
+    border-bottom-style: solid;
+    border-color: var(--color-divine-green);
+}
+
+.page-header {
+    @apply text-2xl font-bold mb-4;
+    color: var(--color-divine-text);
+}
+
+.page-subheader {
+    @apply text-lg font-semibold mb-4;
+    border-bottom: 1px solid var(--color-divine-border);
+    color: var(--color-divine-text);
+}
+
+.button {
+    @apply whitespace-nowrap shrink px-4 py-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+}
+
+.button-primary {
+    background: var(--color-divine-green);
+    color: white;
+    border-color: var(--color-divine-green);
+}
+
+.button-primary:hover:not(:disabled) {
+    background: var(--color-divine-green-dark);
+    box-shadow: var(--shadow-sm);
+}
+
+.button-secondary {
+    background: var(--color-divine-muted);
+    color: var(--color-divine-text);
+    border-color: var(--color-divine-border);
+}
+
+.button-secondary:hover:not(:disabled) {
+    background: var(--color-divine-border);
+    color: var(--color-divine-text);
+}
+
+.button-danger {
+    background: transparent;
+    color: var(--color-divine-error);
+    border-color: var(--color-divine-error);
+}
+
+.button-danger:hover:not(:disabled) {
+    background: var(--color-divine-error);
+    color: white;
+}
+
+.button-icon {
+    @apply flex flex-row items-center gap-2;
+}
+
+.card-grid {
+    @apply grid grid-flow-row auto-rows-fr grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4;
+}
+
+.card {
+    @apply p-4 rounded-lg flex flex-col gap-4;
+    background: var(--color-divine-surface);
+    border: 1px solid var(--color-divine-border);
+    box-shadow: var(--shadow-sm);
+}
+
+.hover-card {
+    @apply cursor-pointer transition-all duration-200;
+}
+
+.hover-card:hover {
+    border-color: var(--color-divine-green);
+    box-shadow: var(--shadow-md);
+}
+
+.pill {
+    @apply rounded-full px-2 py-1 text-xs font-medium self-start;
+    background: var(--color-divine-green);
+    color: white;
+}
+
+.form-group {
+    @apply flex flex-col mb-4;
+}
+
+.form-group label {
+    @apply text-sm mb-1;
+    color: var(--color-divine-text-secondary);
+}
+
+input[type="text"], input[type="password"], input[type="email"], select, input[type="number"], input[type="datetime-local"] {
+    background: var(--color-divine-muted);
+    color: var(--color-divine-text);
+    border: 1px solid var(--color-divine-border);
+    border-radius: var(--radius-md);
+    padding: 0.5rem 0.75rem;
+    font-size: 1rem;
+}
+
+input[type="text"]:focus, input[type="password"]:focus, input[type="email"]:focus, select:focus, input[type="number"]:focus {
+    outline: none;
+    border-color: var(--color-divine-green);
+    box-shadow: 0 0 0 2px rgba(39, 197, 139, 0.2);
+}
+
+.input-error {
+    color: var(--color-divine-error);
+    font-size: 0.875rem;
+}
+
+.feature-panel {
+    @apply relative overflow-hidden rounded-xl p-6 transition-all duration-300;
+    background: var(--color-divine-surface);
+    border: 1px solid var(--color-divine-border);
+    box-shadow: var(--shadow-sm);
+}
+
+.feature-panel:hover {
+    border-color: var(--color-divine-green);
+    box-shadow: var(--shadow-md);
+}
+
+/* Navigation links - cleaner style without dashed underlines */
+.nav-link {
+    color: var(--color-divine-text-secondary);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.nav-link:hover {
+    color: var(--color-divine-text);
+}
+
+.nav-link.active {
+    color: var(--color-divine-green);
+    font-weight: 500;
+}

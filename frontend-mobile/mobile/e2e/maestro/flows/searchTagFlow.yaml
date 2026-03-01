@@ -1,0 +1,11 @@
+appId: co.openvine.app
+env:
+  SEARCH_TAG: "comedy"
+---
+- launchApp:
+    clearState: true
+- runFlow: ../tests/loginFreshInstall.yaml
+- runFlow: ../tests/searchTags.yaml
+
+#Tear down
+- killApp

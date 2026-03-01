@@ -1,0 +1,10 @@
+appId: co.openvine.app
+env:
+  SEARCH_USER: "rabble"
+---
+- runFlow: ../tests/loginFreshInstall.yaml
+- runFlow: ../tests/searchUsers.yaml
+
+- runFlow: ../tests/removeKeys.yaml
+#Tear down
+- killApp

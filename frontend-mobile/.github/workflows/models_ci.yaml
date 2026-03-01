@@ -1,0 +1,27 @@
+# ABOUTME: CI workflow for the models package.
+# ABOUTME: Runs tests, formatting, and analysis only when models files change.
+
+name: Models CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/packages/models/**"
+      - ".github/workflows/models_ci.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/packages/models/**"
+      - ".github/workflows/models_ci.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/flutter_package.yml@v1
+    with:
+      working_directory: "mobile/packages/models"
+      min_coverage: 25

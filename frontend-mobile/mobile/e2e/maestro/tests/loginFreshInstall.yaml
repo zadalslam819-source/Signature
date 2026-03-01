@@ -1,0 +1,43 @@
+appId: co.openvine.app
+---
+#TC to check that the user can login with a fresh app
+#Steps:
+# 1. Open the app in clear state: Login screen is displayed
+# 2. Tap on I am 16 and I agree, tap on Get Started: User is directed to the empty Home screen
+# Fresh install shows "Get Started", returning user shows "Start with a new identity"
+
+# 1. Open the app in clear state: Login screen is displayed
+- launchApp:
+    clearState: true
+- runFlow: "../asserts/assertSplash.yaml"
+
+- runFlow: "../asserts/assertLogin.yaml"
+
+#2. Tap on Create new Divine account
+
+- runFlow:
+    when:
+      visible: Create a new Divine account
+    commands:
+      - tapOn: Create a new Divine account
+      - tapOn: Use Divine with no backup
+      - tapOn: Use this device only
+
+# Commenting this until we have a better test implementation of signing in with keys
+# - runFlow:
+#    when:
+#      visible: Continue with Saved Keys
+#    commands:
+#      - assertVisible: Start with a new identity
+#      - tapOn: Start with a new identity
+#      # Assert the new identity modal and test Cancel
+#      - runFlow: ../asserts/assertNewIdentity.yaml
+#      - tapOn: Cancel
+#      - waitForAnimationToEnd
+#      # Tap again and confirm with Start Fresh
+#      - tapOn: Start with a new identity
+#      - assertVisible: "Start with New Identity?"
+#      - tapOn: Start Fresh
+
+- waitForAnimationToEnd
+- runFlow: ../asserts/assertExploreNew.yaml

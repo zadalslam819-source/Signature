@@ -1,0 +1,27 @@
+# ABOUTME: CI workflow for the nostr_key_manager package.
+# ABOUTME: Runs tests, formatting, and analysis only when nostr_key_manager files change.
+
+name: Nostr Key Manager CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/packages/nostr_key_manager/**"
+      - ".github/workflows/nostr_key_manager.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/packages/nostr_key_manager/**"
+      - ".github/workflows/nostr_key_manager.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: VeryGoodOpenSource/very_good_workflows/.github/workflows/flutter_package.yml@v1
+    with:
+      working_directory: "mobile/packages/nostr_key_manager"
+      min_coverage: 52

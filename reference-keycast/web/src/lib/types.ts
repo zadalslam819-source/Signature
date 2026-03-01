@@ -1,0 +1,121 @@
+export type StoredKey = {
+    id: number;
+    name: string;
+    team_id: number;
+    pubkey: string;
+    created_at: Date;
+    updated_at: Date;
+};
+
+export type User = {
+    user_pubkey: string;
+    role: "Admin" | "Member";
+    created_at: Date;
+    updated_at: Date;
+};
+
+export type Authorization = {
+    id: number;
+    stored_key_id: number;
+    secret_hash: string;
+    bunker_public_key: string;
+    relays: string[];
+    policy_id: number;
+    max_uses: number | null;
+    expires_at: Date | null;
+    connected_client_pubkey: string | null;
+    connected_at: Date | null;
+    label: string | null;
+    created_at: Date;
+    updated_at: Date;
+};
+
+export type Team = {
+    id: number;
+    name: string;
+    created_at: Date;
+    updated_at: Date;
+};
+
+export type TeamWithRelations = {
+    team: Team;
+    team_users: User[];
+    stored_keys: StoredKey[];
+    policies: PolicyWithPermissions[];
+};
+
+export type KeyWithRelations = {
+    team: Team;
+    stored_key: StoredKey;
+    authorizations: AuthorizationWithRelations[];
+};
+
+export type TeamWithKey = {
+    team: Team;
+    stored_key: StoredKey;
+};
+
+export type Policy = {
+    id: number;
+    name: string;
+    team_id: number;
+    created_at: Date;
+    updated_at: Date;
+};
+
+export type AuthorizationWithRelations = {
+    authorization: Authorization;
+    policy: Policy;
+    bunker_connection_string?: string;
+};
+
+export type Permission = {
+    identifier: string;
+    config: JsonValue;
+    created_at?: Date;
+    updated_at?: Date;
+};
+
+export type PolicyWithPermissions = {
+    policy: Policy;
+    permissions: Permission[];
+};
+
+export const AVAILABLE_PERMISSIONS = [
+    "allowed_kinds",
+    "content_filter",
+    "encrypt_to_self",
+];
+
+export type JsonValue =
+    | string
+    | number
+    | boolean
+    | null
+    | JsonValue[]
+    | { [key: string]: JsonValue };
+
+export type AllowedKindsConfig = {
+    sign: number[] | null;
+    encrypt: number[] | null;
+    decrypt: number[] | null;
+};
+
+export type ContentFilterConfig = {
+    blocked_words: string[] | null;
+};
+
+export type BunkerSession = {
+    application_name: string;
+    application_id: number | null;
+    redirect_origin: string;
+    bunker_pubkey: string;
+    client_pubkey: string | null;
+    created_at: string;
+    last_activity: string | null;
+    activity_count: number;
+};
+
+export type BunkerSessionsResponse = {
+    sessions: BunkerSession[];
+};

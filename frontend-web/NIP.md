@@ -1,0 +1,103 @@
+# NIP-71 Implementation: Video Events
+
+## Abstract
+
+This application implements NIP-71 video events for short-form looping video content, using Kind 34236 for addressable short videos.
+
+## Video Event Structure
+
+### Kind 34236 - Addressable Short Videos (NIP-71)
+
+The event kind `34236` is used for addressable short-form video content as defined in NIP-71. Being in the 30000-39999 range makes these events addressable, allowing for updates and preventing duplicates.
+
+#### Required Fields
+
+```json
+{
+  "kind": 34236,
+  "content": "Video description/caption text",
+  "tags": [
+    ["d", "unique-vine-id"],           // REQUIRED: Unique identifier for addressability
+    ["title", "Video Title"],          // REQUIRED by NIP-71
+    ["published_at", "1672531200"],    // REQUIRED by NIP-71
+    ["imeta", "url", "https://videos.host/video.mp4", "m", "video/mp4", "dim", "480x480", "blurhash", "eNH_0EI:${M{%LRjWBaeoLofR*", "image", "https://videos.host/thumb.jpg"],
+    ["client", "divine-web"]           // Client attribution
+  ]
+}
+```
+
+#### Optional Tags
+
+- `title`: Video title
+- `published_at`: Unix timestamp (stringified) of first publication
+- `duration`: Video duration in seconds (typically "6" for classic vines)
+- `alt`: Accessibility description
+- `t`: Hashtags for categorization
+- `loops`: Original loop count from classic Vine imports
+- `likes`: Original like count from classic Vine imports
+- `h`: Group/community identification
+
+### Video URL Parsing
+
+Implementations should use liberal URL parsing following Postel's Law, checking these sources in order:
+
+1. `imeta` tag with url key-value pair
+2. `url` tag value
+3. `r` tag with type annotation
+4. `e` tag if contains valid video URL
+5. `i` tag if contains valid video URL
+6. Any unknown tag containing valid video URL
+7. Content text regex parsing (fallback)
+
+### Media Metadata (imeta tag)
+
+The `imeta` tag structure follows NIP-92 with these properties:
+
+```
+["imeta", 
+  "url", "video_url",           // Primary video URL
+  "m", "video/mp4",             // MIME type
+  "dim", "480x480",             // Dimensions
+  "blurhash", "hash",           // Blur hash for placeholder
+  "image", "thumb_url",         // Thumbnail URL
+  "duration", "6",              // Duration in seconds
+  "x", "sha256_hash",           // File hash
+  "size", "12345"               // File size in bytes
+]
+```
+
+Multiple `imeta` tags may be used to specify different video variants (resolutions, formats).
+
+### Reposts (Kind 16)
+
+Reposts of Kind 34236 videos use standard Kind 16 events:
+
+```json
+{
+  "kind": 16,
+  "content": "",
+  "tags": [
+    ["a", "34236:original_pubkey:d-tag-value"],
+    ["p", "original_author_pubkey"],
+    ["k", "34236"]
+  ]
+}
+```
+
+### Why Kind 34236?
+
+- **NIP-71 Compliance**: Uses the official NIP-71 kind for addressable short videos
+- **Addressable Range (30000-39999)**: Allows videos to be updated/replaced using the same `d` tag
+- **Standardized**: Part of the official Nostr protocol specification
+- **Interoperability**: Compatible with other NIP-71 compliant clients
+
+## Client Behavior
+
+1. **Auto-loop Playback**: Videos should automatically loop seamlessly
+2. **Preloading**: Clients should preload the next video in feeds
+3. **Thumbnail Display**: Show thumbnail until user interaction
+4. **Attribution**: Always include `["client", "divine-web"]` tag
+
+## Compatibility
+
+This implementation follows NIP-71 for maximum interoperability with other Nostr video clients while maintaining compatibility with existing video content.

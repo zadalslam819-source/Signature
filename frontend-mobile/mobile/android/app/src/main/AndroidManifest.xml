@@ -1,0 +1,164 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Internet permission for loading videos and content -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Camera and Microphone Permissions for Video Recording -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Media/Storage Permissions for Profile Picture Selection -->
+    <!-- For Android 13+ (API 33+) - Only images for profile pictures -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- For Android 10-12 (API 29-32) - Only needed for profile pictures on older devices -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- For saving videos to gallery on API 29 and below (gal package) -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- Force override camera.any and wifi to NOT be required (dependencies set them to required=true) -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" tools:replace="android:required" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" tools:replace="android:required" />
+
+    <!-- P2P Permissions for Future Video Sharing (not yet implemented) -->
+    <!-- Uncomment when P2P sync is enabled:
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
+    -->
+
+    <!-- Declare that we do NOT use advertising ID for Google Play compliance -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID"
+        tools:node="remove" />
+
+    <!-- FORCE REMOVE location permissions added by dependencies -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"
+        tools:node="remove" />
+
+    <!-- FORCE REMOVE P2P permissions added by nearby_connections/flutter_embedded_nostr_relay -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"
+        tools:node="remove" />
+
+    <!-- FORCE REMOVE advertising permissions -->
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID"
+        tools:node="remove" />
+
+    <application
+        android:label="divine"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/NormalTheme"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:screenOrientation="portrait">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- Deep links for divine.video and login.divine.video -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+
+                <data android:scheme="https" android:host="divine.video" />
+                <data android:scheme="https" android:host="login.divine.video" />
+
+                <data android:pathPrefix="/video"/>
+                <data android:pathPrefix="/profile"/>
+                <data android:pathPrefix="/hashtag"/>
+                <data android:pathPrefix="/search"/>
+                <data android:pathPrefix="/reset-password"/>
+                <data android:pathPrefix="/verify-email"/>
+            </intent-filter>
+            <!-- NIP-46 callback: signer apps open divine:// to return to our app -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="divine" />
+            </intent-filter>
+
+
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+
+        <!-- NIP-55 Android signer (Amber) -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="nostrsigner" />
+        </intent>
+
+        <!-- Email app launch (email verification flow) -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_EMAIL" />
+        </intent>
+    </queries>
+</manifest>

@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keycast OAuth + PKCE Test</title>
+    <!-- Keycast client library (@keycast/client IIFE bundle) -->
+    <script src="/dist/index.global.js"></script>
+    <!-- nostr-tools for identity generation and NIP-46 bunker signing -->
+    <script src="https://unpkg.com/nostr-tools@2.7.2/lib/nostr.bundle.js"
+            crossorigin="anonymous"></script>
+    <script type="module">
+        // Import nip46 separately (not included in bundle)
+        import { BunkerSigner, parseBunkerInput } from 'https://esm.sh/nostr-tools@2.18.2/nip46';
+        import { SimplePool } from 'https://esm.sh/nostr-tools@2.18.2';
+
+        window.BunkerSigner = BunkerSigner;
+        window.parseBunkerInput = parseBunkerInput;
+        window.SimplePool = SimplePool;
+
+        console.log('[NIP-46] BunkerSigner loaded:', !!BunkerSigner);
+    </script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+        }
+        h1 { color: #bb86fc; }
+        .section {
+            background: #2a2a2a;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        input, button {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 6px;
+            border: 1px solid #4a4a4a;
+            background: #3a3a3a;
+            color: #e0e0e0;
+            font-size: 14px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            background: #bb86fc;
+            color: #000;
+            font-weight: 600;
+            cursor: pointer;
+            width: auto;
+            padding: 12px 24px;
+        }
+        button:hover { background: #cb96fc; }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 6px;
+        }
+        .success { background: #1b5e20; border-left: 4px solid #03dac6; }
+        .error { background: #b71c1c; border-left: 4px solid #cf6679; }
+        .info { background: #1a237e; border-left: 4px solid #03a9f4; }
+        pre {
+            background: #1a1a1a;
+            padding: 12px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 12px;
+            word-break: break-all;
+            white-space: pre-wrap;
+        }
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .button-group button {
+            flex: 1;
+            min-width: 200px;
+        }
+        .flash {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 16px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            z-index: 1000;
+            animation: flash-in 0.3s ease-out, flash-out 0.5s ease-in 3.5s forwards;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        }
+        .flash.success {
+            background: #03dac6;
+            color: #000;
+        }
+        .flash.error {
+            background: #cf6679;
+            color: #000;
+        }
+        @keyframes flash-in {
+            from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        @keyframes flash-out {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Keycast OAuth + PKCE Test</h1>
+    <p>OAuth 2.0 authorization code flow with PKCE security and BYOK support (redirect-based, no popups)</p>
+    <p style="color: #888; font-size: 12px;">Using <code>@keycast/client</code> library</p>
+
+    <div class="section" style="background: #222; border: 1px solid #333;">
+        <h2 style="color: #888; font-size: 14px; margin: 0 0 10px 0;">Environment</h2>
+        <p style="font-size: 12px; margin: 5px 0; color: #666;">
+            <strong>Server:</strong> <code id="apiUrlDisplay" style="color: #888;"></code>
+        </p>
+        <p style="font-size: 12px; margin: 5px 0; color: #666;">
+            <strong>Client ID:</strong> <code style="color: #888;">divine</code>
+        </p>
+    </div>
+
+    <div class="section">
+        <h2>Option 1: New Registration (Server-Generated Key)</h2>
+        <p style="color: #888; font-size: 13px; margin-bottom: 15px;">
+            Keycast will generate a new Nostr identity for you.
+        </p>
+        <button onclick="connectWithKeycast()">Connect with Keycast</button>
+    </div>
+
+    <div class="section" id="identity-section">
+        <h2>Option 2: Bring Your Own Key (BYOK)</h2>
+        <p style="color: #888; font-size: 13px; margin-bottom: 15px;">
+            Use an existing Nostr identity. The key below will be securely transferred to Keycast via PKCE.
+            After authorization, verify the bunker URL contains the same pubkey.
+        </p>
+        <div style="background: #2a4a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #03dac6; margin-bottom: 15px;">
+            <p style="font-size: 12px; margin: 5px 0;"><strong>nsec:</strong> <code id="test-nsec" style="color: #03dac6; word-break: break-all;">Loading...</code></p>
+            <p style="font-size: 12px; margin: 5px 0;"><strong>npub:</strong> <code id="test-npub" style="color: #bb86fc; word-break: break-all;">Loading...</code></p>
+            <p style="font-size: 12px; margin: 5px 0;"><strong>pubkey (hex):</strong> <code id="test-pubkey" style="color: #bb86fc; word-break: break-all;">Loading...</code></p>
+        </div>
+        <div class="button-group">
+            <button onclick="connectWithKeycastBYOK()">Connect with This Key</button>
+            <button onclick="regenerateIdentity()" style="background: #4a4a4a;">Generate New Key</button>
+        </div>
+    </div>
+
+    <div id="status"></div>
+
+    <div class="section" id="results" style="display: none;">
+        <h2>Bunker URL Received</h2>
+        <pre id="bunkerUrl"></pre>
+        <p style="color: #03dac6;">You can now use this bunker URL in any NIP-46 client!</p>
+
+        <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #444;">
+            <h3 style="color: #bb86fc; margin: 0 0 15px 0;">Test NIP-46 Signing</h3>
+            <p style="color: #888; font-size: 13px; margin-bottom: 15px;">
+                Sign a test event using the bunker URL (remote signing via NIP-46, not local nsec).
+            </p>
+            <textarea id="eventContent" placeholder="Enter message to sign (kind:1 note)"
+                style="width: 100%; height: 80px; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #e0e0e0; padding: 10px; font-size: 14px; resize: vertical;">Hello from Keycast OAuth test!</textarea>
+            <div class="button-group" style="margin-top: 10px;">
+                <button onclick="signWithBunker()" id="signBtn">Sign Event via NIP-46</button>
+                <button onclick="clearAndReset()" style="background: #4a4a4a;">Clear & Start Over</button>
+            </div>
+        </div>
+
+        <div id="signResult" style="display: none; margin-top: 20px;">
+            <h3 style="color: #03dac6; margin: 0 0 10px 0;">Signed Event</h3>
+            <pre id="signedEvent" style="max-height: 300px; overflow-y: auto;"></pre>
+        </div>
+    </div>
+
+    <div class="section" id="rpc-section" style="display: none;">
+        <h2>REST RPC API (Low-Latency Alternative)</h2>
+        <p style="color: #888; font-size: 13px; margin-bottom: 15px;">
+            Use the REST RPC API instead of NIP-46 relay-based signing. Lower latency, simpler integration.
+        </p>
+
+        <div style="background: #2a4a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #03dac6; margin-bottom: 15px;">
+            <p style="font-size: 12px; margin: 5px 0;"><strong>API Endpoint:</strong> <code id="rpc-endpoint" style="color: #03dac6;">-</code></p>
+            <p style="font-size: 12px; margin: 5px 0;"><strong>Access Token:</strong> <code id="rpc-token" style="color: #bb86fc; word-break: break-all;">-</code></p>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <h4 style="color: #bb86fc; margin: 0 0 10px 0;">get_public_key</h4>
+            <button onclick="rpcGetPublicKey()">Get Public Key</button>
+        </div>
+
+        <div style="margin-bottom: 20px; padding-top: 15px; border-top: 1px solid #444;">
+            <h4 style="color: #bb86fc; margin: 0 0 10px 0;">sign_event</h4>
+            <textarea id="rpcEventContent" placeholder="Enter message for kind:1 note"
+                style="width: 100%; height: 60px; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #e0e0e0; padding: 10px; font-size: 14px; resize: vertical;">Hello from REST RPC API!</textarea>
+            <button onclick="rpcSignEvent()" style="margin-top: 10px;">Sign Event via RPC</button>
+        </div>
+
+        <div style="margin-bottom: 20px; padding-top: 15px; border-top: 1px solid #444;">
+            <h4 style="color: #bb86fc; margin: 0 0 10px 0;">nip44_encrypt / nip44_decrypt</h4>
+            <input id="rpcNip44Pubkey" placeholder="Recipient pubkey (hex)"
+                style="margin-bottom: 8px;" value="">
+            <textarea id="rpcNip44Plaintext" placeholder="Plaintext to encrypt"
+                style="width: 100%; height: 40px; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #e0e0e0; padding: 10px; font-size: 14px;">Secret message</textarea>
+            <div class="button-group" style="margin-top: 10px;">
+                <button onclick="rpcNip44Encrypt()">NIP-44 Encrypt</button>
+                <button onclick="rpcNip44Decrypt()">NIP-44 Decrypt</button>
+            </div>
+            <pre id="rpcNip44Result" style="margin-top: 10px; display: none;"></pre>
+        </div>
+
+        <div style="margin-bottom: 20px; padding-top: 15px; border-top: 1px solid #444;">
+            <h4 style="color: #bb86fc; margin: 0 0 10px 0;">nip04_encrypt / nip04_decrypt</h4>
+            <input id="rpcNip04Pubkey" placeholder="Recipient pubkey (hex)"
+                style="margin-bottom: 8px;" value="">
+            <textarea id="rpcNip04Plaintext" placeholder="Plaintext to encrypt"
+                style="width: 100%; height: 40px; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #e0e0e0; padding: 10px; font-size: 14px;">Secret message</textarea>
+            <div class="button-group" style="margin-top: 10px;">
+                <button onclick="rpcNip04Encrypt()">NIP-04 Encrypt</button>
+                <button onclick="rpcNip04Decrypt()">NIP-04 Decrypt</button>
+            </div>
+            <pre id="rpcNip04Result" style="margin-top: 10px; display: none;"></pre>
+        </div>
+
+        <div id="rpcResult" style="display: none; margin-top: 20px;">
+            <h3 style="color: #03dac6; margin: 0 0 10px 0;">RPC Response</h3>
+            <pre id="rpcResponse" style="max-height: 300px; overflow-y: auto;"></pre>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================================
+        // Setup: Environment detection and Keycast client initialization
+        // ============================================================================
+
+        const isProduction = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+        const serverUrl = isProduction
+            ? `${window.location.protocol}//${window.location.host}`
+            : 'http://localhost:3000';
+        const redirectUri = window.location.origin + window.location.pathname;
+
+        // Display environment info
+        document.getElementById('apiUrlDisplay').textContent = serverUrl;
+
+        // Initialize Keycast client using @keycast/client library
+        const { createKeycastClient } = KeycastClient;
+        const keycast = createKeycastClient({
+            serverUrl,
+            clientId: 'divine',
+            redirectUri,
+        });
+
+        console.log('[Keycast] Client initialized:', { serverUrl, redirectUri });
+
+        // ============================================================================
+        // UI Helpers (unchanged from original)
+        // ============================================================================
+
+        function showStatus(message, type = 'info') {
+            const el = document.getElementById('status');
+            el.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+
+        function showFlash(message, type = 'success') {
+            const existing = document.querySelector('.flash');
+            if (existing) existing.remove();
+
+            const flash = document.createElement('div');
+            flash.className = `flash ${type}`;
+            flash.textContent = message;
+            document.body.appendChild(flash);
+
+            setTimeout(() => flash.remove(), 4000);
+        }
+
+        function waitForNostrTools() {
+            return new Promise((resolve) => {
+                if (window.NostrTools) {
+                    resolve();
+                } else {
+                    window.addEventListener('load', () => resolve());
+                }
+            });
+        }
+
+        // ============================================================================
+        // Identity Management (unchanged - uses nostr-tools)
+        // ============================================================================
+
+        let currentIdentity = null;
+
+        function generateTestNsec() {
+            const { generateSecretKey, getPublicKey, nip19 } = window.NostrTools;
+
+            const secretKey = generateSecretKey();
+            const pubkeyHex = getPublicKey(secretKey);
+
+            const nsec = nip19.nsecEncode(secretKey);
+            const npub = nip19.npubEncode(pubkeyHex);
+
+            currentIdentity = { nsec, pubkey: pubkeyHex, npub };
+            sessionStorage.setItem('test_identity', JSON.stringify(currentIdentity));
+            updateIdentityDisplay();
+
+            return currentIdentity;
+        }
+
+        function loadOrGenerateIdentity() {
+            const stored = sessionStorage.getItem('test_identity');
+            if (stored) {
+                try {
+                    currentIdentity = JSON.parse(stored);
+                    updateIdentityDisplay();
+                    return currentIdentity;
+                } catch (e) {
+                    console.error('Failed to parse stored identity:', e);
+                }
+            }
+            return generateTestNsec();
+        }
+
+        function updateIdentityDisplay() {
+            if (!currentIdentity) return;
+            document.getElementById('test-nsec').textContent = currentIdentity.nsec;
+            document.getElementById('test-pubkey').textContent = currentIdentity.pubkey;
+            document.getElementById('test-npub').textContent = currentIdentity.npub;
+        }
+
+        function regenerateIdentity() {
+            generateTestNsec();
+            showStatus('New identity generated. Use BYOK to authorize with this key.', 'info');
+        }
+
+        // ============================================================================
+        // OAuth Flow (using @keycast/client)
+        // ============================================================================
+
+        async function connectWithKeycast() {
+            showStatus('Starting OAuth flow...', 'info');
+
+            try {
+                const { url, pkce } = await keycast.oauth.getAuthorizationUrl();
+
+                // Store PKCE verifier for callback
+                sessionStorage.setItem('pkce_verifier', pkce.verifier);
+                sessionStorage.removeItem('byok_used');
+                sessionStorage.removeItem('byok_pubkey');
+
+                showStatus('Redirecting to Keycast...', 'info');
+                setTimeout(() => {
+                    window.location.href = url;
+                }, 300);
+            } catch (error) {
+                showStatus(`OAuth error: ${error.message}`, 'error');
+            }
+        }
+
+        async function connectWithKeycastBYOK() {
+            await waitForNostrTools();
+
+            if (!currentIdentity) {
+                showStatus('No identity available. Please wait for page to load.', 'error');
+                return;
+            }
+
+            showStatus(`Starting BYOK OAuth flow...<br><small>Using identity: ${currentIdentity.pubkey.substring(0, 16)}...</small>`, 'info');
+
+            try {
+                const { url, pkce } = await keycast.oauth.getAuthorizationUrl({
+                    nsec: currentIdentity.nsec,
+                    byokPubkey: currentIdentity.pubkey,
+                    defaultRegister: true,
+                });
+
+                // Store PKCE verifier and BYOK info for callback
+                sessionStorage.setItem('pkce_verifier', pkce.verifier);
+                sessionStorage.setItem('byok_used', 'true');
+                sessionStorage.setItem('byok_pubkey', currentIdentity.pubkey);
+
+                showStatus('Redirecting to Keycast...', 'info');
+                setTimeout(() => {
+                    window.location.href = url;
+                }, 300);
+            } catch (error) {
+                showStatus(`OAuth error: ${error.message}`, 'error');
+            }
+        }
+
+        async function handleCallback(code) {
+            const verifier = sessionStorage.getItem('pkce_verifier');
+            const byokUsed = sessionStorage.getItem('byok_used') === 'true';
+            const expectedPubkey = sessionStorage.getItem('byok_pubkey');
+
+            if (!verifier) {
+                showStatus('PKCE verifier not found. Please restart OAuth flow.', 'error');
+                return;
+            }
+
+            showStatus(`Exchanging code for bunker URL...<br><small>Code: ${code.substring(0, 16)}...</small>`, 'info');
+
+            try {
+                const tokens = await keycast.oauth.exchangeCode(code, verifier);
+
+                // Display bunker URL
+                document.getElementById('results').style.display = 'block';
+                document.getElementById('bunkerUrl').textContent = tokens.bunker_url;
+
+                // Store credentials
+                const credentials = keycast.oauth.toStoredCredentials(tokens);
+                localStorage.setItem('keycast_credentials', JSON.stringify(credentials));
+
+                // Initialize RPC client if available (nostrApi is derived from serverUrl)
+                if (tokens.access_token) {
+                    initRpcClient(tokens);
+                    await showRpcSection(serverUrl + '/api/nostr', tokens.access_token);
+                }
+
+                // Verify BYOK pubkey if applicable
+                if (byokUsed && expectedPubkey) {
+                    const url = new URL(tokens.bunker_url);
+                    const bunkerPubkey = url.hostname || url.pathname.replace('//', '');
+
+                    if (bunkerPubkey === expectedPubkey) {
+                        showStatus(`Token exchange successful!<br><span style="color: #03dac6;">BYOK Verified: Bunker pubkey matches your identity!</span>`, 'success');
+                    } else {
+                        showStatus(`Token exchange successful, but pubkey mismatch!<br>
+                            <span style="color: #cf6679;">Expected: ${expectedPubkey.substring(0, 16)}...</span><br>
+                            <span style="color: #cf6679;">Got: ${bunkerPubkey.substring(0, 16)}...</span>`, 'error');
+                    }
+                } else {
+                    showStatus('Token exchange successful!', 'success');
+                }
+
+                // Clean up sessionStorage
+                sessionStorage.removeItem('pkce_verifier');
+                sessionStorage.removeItem('byok_used');
+                sessionStorage.removeItem('byok_pubkey');
+
+            } catch (error) {
+                showStatus(`Token exchange failed: ${error.message}`, 'error');
+            }
+        }
+
+        // ============================================================================
+        // NIP-46 Bunker Signing (unchanged - uses nostr-tools BunkerSigner)
+        // ============================================================================
+
+        let bunkerSigner = null;
+
+        async function signWithBunker() {
+            const bunkerUrl = document.getElementById('bunkerUrl').textContent;
+            const content = document.getElementById('eventContent').value.trim();
+            const signBtn = document.getElementById('signBtn');
+
+            if (!content) {
+                showStatus('Please enter a message to sign.', 'error');
+                return;
+            }
+
+            signBtn.disabled = true;
+            signBtn.textContent = 'Connecting to bunker...';
+            showStatus('Connecting to bunker via NIP-46...', 'info');
+
+            try {
+                const BunkerSigner = window.BunkerSigner;
+                const parseBunkerInput = window.parseBunkerInput;
+                const SimplePool = window.SimplePool;
+                const { generateSecretKey } = window.NostrTools;
+
+                if (!BunkerSigner || !parseBunkerInput) {
+                    throw new Error('NIP-46 modules not loaded yet. Please wait and try again.');
+                }
+
+                console.log('[NIP-46] Connecting to bunker:', bunkerUrl);
+
+                if (!bunkerSigner) {
+                    signBtn.textContent = 'Parsing bunker URL...';
+
+                    const bunkerPointer = await parseBunkerInput(bunkerUrl);
+                    if (!bunkerPointer) {
+                        throw new Error('Invalid bunker URL');
+                    }
+
+                    console.log('[NIP-46] Parsed bunker pointer:', bunkerPointer);
+
+                    signBtn.textContent = 'Establishing connection...';
+                    showStatus(`Connecting to relay: ${bunkerPointer.relays?.[0]}...`, 'info');
+
+                    const clientSecretKey = generateSecretKey();
+                    const pool = new SimplePool();
+                    bunkerSigner = BunkerSigner.fromBunker(clientSecretKey, bunkerPointer, { pool });
+
+                    await bunkerSigner.connect();
+                    console.log('[NIP-46] Connected to bunker');
+                }
+
+                signBtn.textContent = 'Signing event...';
+                showStatus('Requesting signature from bunker...', 'info');
+
+                const unsignedEvent = {
+                    kind: 1,
+                    created_at: Math.floor(Date.now() / 1000),
+                    tags: [],
+                    content: content
+                };
+
+                console.log('[NIP-46] Requesting signature for event:', unsignedEvent);
+
+                const signedEvent = await bunkerSigner.signEvent(unsignedEvent);
+
+                console.log('[NIP-46] Received signed event:', signedEvent);
+
+                document.getElementById('signResult').style.display = 'block';
+                document.getElementById('signedEvent').textContent = JSON.stringify(signedEvent, null, 2);
+
+                showStatus(`Event signed successfully via NIP-46!<br>
+                    <small>Event ID: ${signedEvent.id.substring(0, 16)}...</small><br>
+                    <small>Pubkey: ${signedEvent.pubkey.substring(0, 16)}...</small>`, 'success');
+
+                signBtn.textContent = 'Sign Another Event';
+                signBtn.disabled = false;
+
+            } catch (error) {
+                console.error('[NIP-46] Error:', error);
+                showStatus(`NIP-46 signing failed: ${error.message}`, 'error');
+                signBtn.textContent = 'Sign Event via NIP-46';
+                signBtn.disabled = false;
+                bunkerSigner = null;
+            }
+        }
+
+        // ============================================================================
+        // REST RPC API (using @keycast/client KeycastRpc)
+        // ============================================================================
+
+        let rpcClient = null;
+
+        function initRpcClient(tokens) {
+            rpcClient = keycast.createRpc(tokens);
+            console.log('[RPC] Client initialized:', !!rpcClient);
+            return rpcClient;
+        }
+
+        async function showRpcSection(nostrApi, accessToken) {
+            document.getElementById('rpc-section').style.display = 'block';
+            document.getElementById('rpc-endpoint').textContent = nostrApi;
+            document.getElementById('rpc-token').textContent = accessToken.substring(0, 50) + '...';
+
+            // Auto-populate pubkey fields for encrypt/decrypt testing (encrypt to self)
+            if (rpcClient) {
+                try {
+                    const pubkey = await rpcClient.getPublicKey();
+                    document.getElementById('rpcNip44Pubkey').value = pubkey;
+                    document.getElementById('rpcNip04Pubkey').value = pubkey;
+                    console.log('[RPC] Auto-populated pubkey fields for encrypt-to-self testing:', pubkey);
+                } catch (e) {
+                    console.warn('[RPC] Could not auto-populate pubkey fields:', e);
+                }
+            }
+        }
+
+        async function rpcGetPublicKey() {
+            if (!rpcClient) {
+                showStatus('No RPC client. Please complete OAuth flow first.', 'error');
+                return;
+            }
+
+            showStatus('Calling RPC: get_public_key...', 'info');
+
+            try {
+                const pubkey = await rpcClient.getPublicKey();
+                document.getElementById('rpcResult').style.display = 'block';
+                document.getElementById('rpcResponse').textContent = JSON.stringify({ result: pubkey }, null, 2);
+                showStatus('RPC get_public_key successful!', 'success');
+            } catch (error) {
+                showStatus(`RPC Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function rpcSignEvent() {
+            if (!rpcClient) {
+                showStatus('No RPC client. Please complete OAuth flow first.', 'error');
+                return;
+            }
+
+            const content = document.getElementById('rpcEventContent').value.trim();
+            if (!content) {
+                showStatus('Please enter a message to sign.', 'error');
+                return;
+            }
+
+            showStatus('Calling RPC: sign_event...', 'info');
+
+            try {
+                // First get the pubkey since unsigned events need it
+                const pubkey = await rpcClient.getPublicKey();
+
+                const unsignedEvent = {
+                    pubkey: pubkey,
+                    kind: 1,
+                    created_at: Math.floor(Date.now() / 1000),
+                    tags: [],
+                    content: content,
+                };
+
+                const signedEvent = await rpcClient.signEvent(unsignedEvent);
+                document.getElementById('rpcResult').style.display = 'block';
+                document.getElementById('rpcResponse').textContent = JSON.stringify({ result: signedEvent }, null, 2);
+                showStatus('RPC sign_event successful!', 'success');
+            } catch (error) {
+                showStatus(`RPC Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function rpcNip44Encrypt() {
+            if (!rpcClient) {
+                showStatus('No RPC client. Please complete OAuth flow first.', 'error');
+                return;
+            }
+
+            const pubkey = document.getElementById('rpcNip44Pubkey').value.trim();
+            const plaintext = document.getElementById('rpcNip44Plaintext').value;
+
+            if (!pubkey) {
+                showStatus('Please enter a recipient pubkey.', 'error');
+                return;
+            }
+
+            showStatus('Calling RPC: nip44_encrypt...', 'info');
+
+            try {
+                const ciphertext = await rpcClient.nip44Encrypt(pubkey, plaintext);
+                // Put ciphertext into textarea so user can click Decrypt next
+                document.getElementById('rpcNip44Plaintext').value = ciphertext;
+                document.getElementById('rpcNip44Result').style.display = 'block';
+                document.getElementById('rpcNip44Result').textContent = `Ciphertext:\n${ciphertext}`;
+                document.getElementById('rpcResult').style.display = 'block';
+                document.getElementById('rpcResponse').textContent = JSON.stringify({ result: ciphertext }, null, 2);
+                showStatus('RPC nip44_encrypt successful! Click Decrypt to test decryption.', 'success');
+            } catch (error) {
+                showStatus(`RPC Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function rpcNip44Decrypt() {
+            if (!rpcClient) {
+                showStatus('No RPC client. Please complete OAuth flow first.', 'error');
+                return;
+            }
+
+            const pubkey = document.getElementById('rpcNip44Pubkey').value.trim();
+            const ciphertext = document.getElementById('rpcNip44Plaintext').value;
+
+            if (!pubkey) {
+                showStatus('Please enter the sender pubkey.', 'error');
+                return;
+            }
+
+            showStatus('Calling RPC: nip44_decrypt...', 'info');
+
+            try {
+                const plaintext = await rpcClient.nip44Decrypt(pubkey, ciphertext);
+                // Put plaintext back into textarea so user can re-encrypt (round-trip testing)
+                document.getElementById('rpcNip44Plaintext').value = plaintext;
+                document.getElementById('rpcNip44Result').style.display = 'block';
+                document.getElementById('rpcNip44Result').textContent = `Plaintext:\n${plaintext}`;
+                document.getElementById('rpcResult').style.display = 'block';
+                document.getElementById('rpcResponse').textContent = JSON.stringify({ result: plaintext }, null, 2);
+                showStatus('RPC nip44_decrypt successful! Click Encrypt to re-encrypt.', 'success');
+            } catch (error) {
+                showStatus(`RPC Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function rpcNip04Encrypt() {
+            if (!rpcClient) {
+                showStatus('No RPC client. Please complete OAuth flow first.', 'error');
+                return;
+            }
+
+            const pubkey = document.getElementById('rpcNip04Pubkey').value.trim();
+            const plaintext = document.getElementById('rpcNip04Plaintext').value;
+
+            if (!pubkey) {
+                showStatus('Please enter a recipient pubkey.', 'error');
+                return;
+            }
+
+            showStatus('Calling RPC: nip04_encrypt...', 'info');
+
+            try {
+                const ciphertext = await rpcClient.nip04Encrypt(pubkey, plaintext);
+                // Put ciphertext into textarea so user can click Decrypt next
+                document.getElementById('rpcNip04Plaintext').value = ciphertext;
+                document.getElementById('rpcNip04Result').style.display = 'block';
+                document.getElementById('rpcNip04Result').textContent = `Ciphertext:\n${ciphertext}`;
+                document.getElementById('rpcResult').style.display = 'block';
+                document.getElementById('rpcResponse').textContent = JSON.stringify({ result: ciphertext }, null, 2);
+                showStatus('RPC nip04_encrypt successful! Click Decrypt to test decryption.', 'success');
+            } catch (error) {
+                showStatus(`RPC Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function rpcNip04Decrypt() {
+            if (!rpcClient) {
+                showStatus('No RPC client. Please complete OAuth flow first.', 'error');
+                return;
+            }
+
+            const pubkey = document.getElementById('rpcNip04Pubkey').value.trim();
+            const ciphertext = document.getElementById('rpcNip04Plaintext').value;
+
+            if (!pubkey) {
+                showStatus('Please enter the sender pubkey.', 'error');
+                return;
+            }
+
+            showStatus('Calling RPC: nip04_decrypt...', 'info');
+
+            try {
+                const plaintext = await rpcClient.nip04Decrypt(pubkey, ciphertext);
+                // Put plaintext back into textarea so user can re-encrypt (round-trip testing)
+                document.getElementById('rpcNip04Plaintext').value = plaintext;
+                document.getElementById('rpcNip04Result').style.display = 'block';
+                document.getElementById('rpcNip04Result').textContent = `Plaintext:\n${plaintext}`;
+                document.getElementById('rpcResult').style.display = 'block';
+                document.getElementById('rpcResponse').textContent = JSON.stringify({ result: plaintext }, null, 2);
+                showStatus('RPC nip04_decrypt successful! Click Encrypt to re-encrypt.', 'success');
+            } catch (error) {
+                showStatus(`RPC Error: ${error.message}`, 'error');
+            }
+        }
+
+        // ============================================================================
+        // Clear and Reset
+        // ============================================================================
+
+        function clearAndReset() {
+            localStorage.removeItem('keycast_credentials');
+            sessionStorage.removeItem('pkce_verifier');
+            sessionStorage.removeItem('byok_used');
+            sessionStorage.removeItem('byok_pubkey');
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('signResult').style.display = 'none';
+            document.getElementById('rpc-section').style.display = 'none';
+            document.getElementById('rpcResult').style.display = 'none';
+            bunkerSigner = null;
+            rpcClient = null;
+            generateTestNsec();
+            showStatus('Cleared. New identity generated. Ready to start over.', 'info');
+        }
+
+        // ============================================================================
+        // Page Initialization
+        // ============================================================================
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            await waitForNostrTools();
+            loadOrGenerateIdentity();
+
+            // Check for OAuth callback
+            const result = keycast.oauth.parseCallback(window.location.href);
+
+            if ('error' in result && result.error !== 'missing_code') {
+                showStatus(`Authorization failed: ${result.description || result.error}`, 'error');
+                window.history.replaceState({}, document.title, window.location.pathname);
+                return;
+            }
+
+            if ('code' in result) {
+                // Get stored identity for flash message
+                let shortNpub = '';
+                try {
+                    const storedIdentity = sessionStorage.getItem('test_identity');
+                    if (storedIdentity) {
+                        const identity = JSON.parse(storedIdentity);
+                        if (identity.npub) {
+                            shortNpub = `${identity.npub.slice(0, 12)}...${identity.npub.slice(-4)}`;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Could not parse stored identity:', e);
+                }
+
+                showFlash(shortNpub ? `Connected as ${shortNpub}` : 'Connected!', 'success');
+                showStatus('Completing setup...', 'info');
+                window.history.replaceState({}, document.title, window.location.pathname);
+                handleCallback(result.code);
+                return;
+            }
+
+            // Check for stored credentials
+            const storedCredentials = localStorage.getItem('keycast_credentials');
+            if (storedCredentials) {
+                try {
+                    const credentials = JSON.parse(storedCredentials);
+
+                    // Check if expired
+                    if (keycast.oauth.isExpired(credentials)) {
+                        localStorage.removeItem('keycast_credentials');
+                        showStatus('Previous session expired. Please authenticate again.', 'info');
+                        return;
+                    }
+
+                    document.getElementById('results').style.display = 'block';
+                    document.getElementById('bunkerUrl').textContent = credentials.bunkerUrl;
+                    showStatus('Found existing credentials from previous session.', 'info');
+
+                    // Restore RPC client if available (nostrApi is derived from serverUrl)
+                    if (credentials.accessToken) {
+                        rpcClient = keycast.createRpc({
+                            access_token: credentials.accessToken,
+                        });
+                        await showRpcSection(serverUrl + '/api/nostr', credentials.accessToken);
+                    }
+                } catch (e) {
+                    console.error('Failed to restore credentials:', e);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,313 @@
+name: openvine
+description: "divine - A decentralized vine-like video sharing app powered by Nostr."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: "none" # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.0.5+495
+
+environment:
+  sdk: ^3.11.0
+  flutter: ^3.41.1
+
+workspace:
+  - packages/comments_repository
+  - packages/curated_list_repository
+  - packages/divine_ui
+  - packages/db_client
+  - packages/divine_camera
+  - packages/funnelcake_api_client
+  - packages/hashtag_repository
+  - packages/keycast_flutter
+  - packages/likes_repository
+  - packages/media_cache
+  - packages/models
+  - packages/nostr_sdk
+  - packages/nostr_client
+  - packages/nostr_key_manager
+  - packages/permissions_service
+  - packages/pooled_video_player
+  - packages/profile_repository
+  - packages/reposts_repository
+  - packages/sound_service
+  - packages/videos_repository
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
+
+  # State management
+  flutter_riverpod: ^3.0.0
+  riverpod_annotation: ^3.0.0
+  flutter_bloc: ^9.0.0
+  bloc_concurrency: ^0.3.0
+  freezed_annotation: ^3.0.0
+  json_annotation: ^4.9.0
+  rxdart: ^0.28.0
+
+  # Networking
+  http: ^1.5.0
+  http_parser: ^4.0.2
+  web_socket_channel: ^3.0.3
+  connectivity_plus: ^7.0.0
+  device_info_plus: ^10.1.2
+  url_launcher: ^6.3.2
+  # OAuth: Uses ASWebAuthenticationSession on iOS (Apple's recommended auth flow)
+  # https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession
+  flutter_web_auth_2: ^4.1.0
+  dio: ^5.8.0
+
+  permission_handler: ^12.0.1 # Handle runtime permissions
+
+  # Camera and media
+  c2pa_flutter:
+    git:
+      url: https://github.com/guardianproject/c2pa-flutter.git
+      ref: main
+  divine_camera:
+    path: packages/divine_camera
+  camera_macos_plus: ^0.0.4
+  video_player: ^2.9.1 # Uses native AVPlayer (iOS/macOS) and ExoPlayer (Android)
+  visibility_detector: ^0.4.0+2 # Detect widget visibility for proper video control
+  image: ^4.1.7 # Image processing for GIF generation
+  image_picker: ^1.2.0 # For selecting images from gallery or camera
+  gal: ^2.3.2 # Save videos to device photo gallery
+  file_selector: ^1.0.4 # For desktop file selection (macOS, Windows, Linux)
+
+  # Cloud services (removed cloudinary_public - using Blossom instead)
+
+  # Local persistence
+  hive_ce: ^2.6.0
+  hive_ce_flutter: ^2.1.0
+
+  # Storage
+  shared_preferences: ^2.2.3
+  sqflite: ^2.3.3+1
+  path_provider: ^2.1.4
+  flutter_secure_storage: ^9.0.0
+
+  # Crypto (needed for Nostr)
+  crypto: ^3.0.7
+  bech32: ^0.2.2
+
+  # UI/UX
+  cached_network_image: ^3.3.1
+  flutter_cache_manager: ^3.3.1
+  share_plus: ^12.0.0 # Cross-platform sharing
+  google_fonts: ^6.3.2 # For using Google Fonts including Pacifico
+  flutter_svg: ^2.0.10+1 # For custom SVG icons
+  blurhash_dart: ^1.2.1 # Generate blurhash for progressive image loading
+  skeletonizer: ^2.1.2 # Skeleton loading animations with shimmer effect
+
+  # Sound Service - Sound effects (countdown beeps, etc.)
+  sound_service:
+
+  # Nostr SDK - Local package for comprehensive Nostr support
+  nostr_sdk:
+
+  # Nostr Key Manager - Secure key management with hardware-backed storage
+  nostr_key_manager:
+
+  keycast_flutter:
+
+  # Hashtag Repository - Hashtag search data layer
+  hashtag_repository:
+
+  # Videos Repository - Video feed data layer
+  videos_repository:
+
+  # Divine UI - Shared UI components
+  divine_ui:
+
+  # Logging
+  logging: ^1.2.0
+
+  # Missing dependencies required by nostr_sdk
+  equatable: ^2.0.5
+
+  # Desktop window management for proper window sizing
+  window_manager: ^0.5.1
+  firebase_core: ^4.4.0
+  firebase_crashlytics: ^5.0.7
+  firebase_analytics: ^12.1.2
+  go_router: ^16.2.4
+  flutter_local_notifications: ^19.4.2
+  package_info_plus: ^9.0.0
+  uuid: ^4.5.1
+  app_links: ^6.4.1
+  drift: ^2.29.0
+  drift_flutter: ^0.2.7
+  sqlite3_flutter_libs: ^0.5.40
+  video_player_web_hls: ^1.3.0
+  firebase_performance: ^0.11.1+4
+  convert: ^3.1.2
+  just_audio: ^0.10.5
+  audio_session: ^0.2.2
+  pro_video_editor: ^1.6.0
+  pro_image_editor: ^12.0.0
+  linked_scroll_controller: ^0.2.0
+  flutter_colorpicker: ^1.1.0
+  file_picker: ^10.3.7
+  sensors_plus: ^7.0.0
+  media_kit: ^1.2.6
+  media_kit_libs_video: ^1.0.7
+  # Temporary override to include texture rotation fix
+  # https://github.com/media-kit/media-kit/issues/627
+  # Will be removed once the fix is merged and released
+  media_kit_video:
+    git:
+      url: https://github.com/divinevideo/media-kit
+      ref: fix/texture-rotation
+      path: media_kit_video
+  stream_transform: ^2.1.1
+  flutter_staggered_grid_view: ^0.7.0
+  qr_flutter: ^4.1.0
+  android_intent_plus: ^6.0.0
+
+dependency_overrides:
+  device_info_plus: ^10.1.2
+  rxdart: ^0.28.0
+  cryptography_flutter:
+    path: overrides/cryptography_flutter-2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.4
+
+  very_good_analysis: ^10.2.0
+
+  # Testing
+  mocktail: ^1.0.3
+  bloc_test: ^10.0.0
+
+  # Code generation
+  build_runner: ^2.7.1
+  hive_ce_generator: ^1.6.0
+
+  # CLI tools
+  args: ^2.4.2
+  riverpod_generator: ^3.0.0
+  # custom_lint: ^0.6.4  # Temporarily disabled due to rxdart version conflict
+  # riverpod_lint: ^2.3.10  # Depends on custom_lint
+  freezed: ^3.0.0
+  json_serializable: ^6.8.0
+  path: any
+  yaml: any
+  golden_toolkit: ^0.15.0
+  alchemist: ^0.12.1
+  async: ^2.13.0
+  drift_dev: ^2.29.0
+  melos: ^7.3.0
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in
+  # the material Icons class.
+  uses-material-design: true
+
+  # To add assets to your application, add an assets section, like this:
+  assets:
+    - assets/videos/
+    - assets/sounds/
+    - assets/top_1000_hashtags.json
+    - assets/fonts/
+    - google_fonts/
+    - assets/icon/
+    - assets/icon/content-controls/
+    - assets/loading-brand.gif
+    - assets/loading-brand-sprite.png
+    - assets/seed_data/seed_events.sql
+    - assets/seed_media/manifest.json
+    - assets/seed_media/videos/
+    - assets/seed_media/thumbnails/
+    - assets/stickers/
+    - shorebird.yaml
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding adding assets from package dependencies, see
+  # https://flutter.dev/to/asset-from-package
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  fonts:
+    - family: Pacifico
+      fonts:
+        - asset: assets/fonts/Pacifico-Regular.ttf
+    - family: BricolageGrotesque
+      fonts:
+        - asset: assets/fonts/BricolageGrotesque-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/BricolageGrotesque-ExtraBold.ttf
+          weight: 800
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
+  #
+  # For details regarding fonts from package dependencies,
+  # see https://flutter.dev/to/font-from-package
+
+# Flutter launcher icons configuration
+flutter_launcher_icons:
+  android: true
+  ios: true
+  macos:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+  adaptive_icon_background: "#00B488"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+
+melos:
+  useRootAsPackage: true
+
+  scripts:
+    generate: melos exec --depends-on build_runner -- dart run build_runner build -d

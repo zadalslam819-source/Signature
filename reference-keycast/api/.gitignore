@@ -1,0 +1,6 @@
+/target
+/database/keycast.db
+/database/keycast.db-shm
+/database/keycast.db-wal
+.env
+master.key
